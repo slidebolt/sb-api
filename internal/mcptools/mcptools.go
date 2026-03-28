@@ -41,11 +41,16 @@ The user invokes SlideBolt tools by prefixing their request with "sb". Examples:
 
 Entity keys follow the pattern plugin.device.entity (e.g. plugin-automation.group.basementedison).
 Command NATS subjects are plugin.device.entity.command.action.
-Scripts are Lua and managed under the sb-script.scripts.* keyspace.`),
+Scripts are Lua and managed under the sb-script.scripts.* keyspace.
+Queries are named, reusable search definitions stored under sb-query.queries.* and referenced by name (queryRef) in scripts and automations.`),
 	)
 
 	s.AddTool(mcp.NewTool("list_devices",
 		mcp.WithDescription("List all devices in storage"),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(false),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		entries, err := store.Search("*.*")
 		if err != nil {
@@ -57,6 +62,10 @@ Scripts are Lua and managed under the sb-script.scripts.* keyspace.`),
 
 	s.AddTool(mcp.NewTool("create_device",
 		mcp.WithDescription("Create or update a device in storage"),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(false),
 		mcp.WithString("plugin", mcp.Required(), mcp.Description("Plugin ID, e.g. esphome")),
 		mcp.WithString("id", mcp.Required(), mcp.Description("Device ID, e.g. living_room")),
 		mcp.WithString("data", mcp.Required(), mcp.Description("Device JSON object")),
@@ -78,6 +87,10 @@ Scripts are Lua and managed under the sb-script.scripts.* keyspace.`),
 
 	s.AddTool(mcp.NewTool("list_entities",
 		mcp.WithDescription("List all entities in storage"),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(false),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		entries, err := store.Search("*.*.*")
 		if err != nil {
@@ -89,6 +102,10 @@ Scripts are Lua and managed under the sb-script.scripts.* keyspace.`),
 
 	s.AddTool(mcp.NewTool("create_entity",
 		mcp.WithDescription("Create or update an entity in storage"),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(false),
 		mcp.WithString("plugin", mcp.Required(), mcp.Description("Plugin ID, e.g. esphome")),
 		mcp.WithString("device", mcp.Required(), mcp.Description("Device ID, e.g. living_room")),
 		mcp.WithString("entity", mcp.Required(), mcp.Description("Entity ID, e.g. light_001")),
@@ -112,6 +129,10 @@ Scripts are Lua and managed under the sb-script.scripts.* keyspace.`),
 
 	s.AddTool(mcp.NewTool("delete_entity",
 		mcp.WithDescription("Delete an entity from storage"),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(true),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(false),
 		mcp.WithString("plugin", mcp.Required(), mcp.Description("Plugin ID, e.g. esphome")),
 		mcp.WithString("device", mcp.Required(), mcp.Description("Device ID, e.g. living_room")),
 		mcp.WithString("entity", mcp.Required(), mcp.Description("Entity ID, e.g. light_001")),
@@ -134,6 +155,10 @@ Scripts are Lua and managed under the sb-script.scripts.* keyspace.`),
 
 	s.AddTool(mcp.NewTool("list_scripts",
 		mcp.WithDescription("List all saved Lua scripts with their running instances"),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(false),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		defEntries, err := store.Search("sb-script.scripts.>")
 		if err != nil {
@@ -185,6 +210,10 @@ Scripts are Lua and managed under the sb-script.scripts.* keyspace.`),
 
 	s.AddTool(mcp.NewTool("get_script",
 		mcp.WithDescription("Get a specific script definition and its running instances"),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(false),
 		mcp.WithString("name", mcp.Required(), mcp.Description("Script name")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		name := req.GetString("name", "")
@@ -235,6 +264,10 @@ Scripts are Lua and managed under the sb-script.scripts.* keyspace.`),
 
 	s.AddTool(mcp.NewTool("save_script",
 		mcp.WithDescription("Save or update a Lua script definition"),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(false),
 		mcp.WithString("name", mcp.Required(), mcp.Description("Script name")),
 		mcp.WithString("source", mcp.Required(), mcp.Description("Lua source code")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -257,6 +290,10 @@ Scripts are Lua and managed under the sb-script.scripts.* keyspace.`),
 
 	s.AddTool(mcp.NewTool("start_script",
 		mcp.WithDescription("Start a script instance via NATS request/reply"),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(false),
+		mcp.WithOpenWorldHintAnnotation(true),
 		mcp.WithString("name", mcp.Required(), mcp.Description("Script name")),
 		mcp.WithString("queryRef", mcp.Description("Optional query reference for targeting")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -290,6 +327,10 @@ Scripts are Lua and managed under the sb-script.scripts.* keyspace.`),
 
 	s.AddTool(mcp.NewTool("stop_script",
 		mcp.WithDescription("Stop a specific script instance"),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(true),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(true),
 		mcp.WithString("name", mcp.Required(), mcp.Description("Script name")),
 		mcp.WithString("hash", mcp.Required(), mcp.Description("Instance hash")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -316,8 +357,73 @@ Scripts are Lua and managed under the sb-script.scripts.* keyspace.`),
 		return mcp.NewToolResultText(fmt.Sprintf("script %s instance %s stopped", name, hash)), nil
 	})
 
+	s.AddTool(mcp.NewTool("list_queries",
+		mcp.WithDescription("List all saved query definitions"),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(false),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		defs, err := storage.ListQueryDefinitions(store)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("list queries failed: %v", err)), nil
+		}
+		out, _ := json.Marshal(defs)
+		return mcp.NewToolResultText(string(out)), nil
+	})
+
+	s.AddTool(mcp.NewTool("save_query",
+		mcp.WithDescription("Save or update a named query definition"),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(false),
+		mcp.WithString("name", mcp.Required(), mcp.Description("Query name, e.g. basement_lights")),
+		mcp.WithString("pattern", mcp.Description("Key pattern for matching, e.g. > or plugin.device.*")),
+		mcp.WithString("where", mcp.Description("JSON array of filters, e.g. [{\"field\":\"labels.Area\",\"op\":\"eq\",\"value\":\"Basement\"}]")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		name := req.GetString("name", "")
+		if name == "" {
+			return mcp.NewToolResultError("name is required"), nil
+		}
+		pattern := req.GetString("pattern", "")
+		var filters []storage.Filter
+		if whereStr := req.GetString("where", ""); whereStr != "" {
+			if err := json.Unmarshal([]byte(whereStr), &filters); err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("invalid where JSON: %v", err)), nil
+			}
+		}
+		q := storage.Query{Pattern: pattern, Where: filters}
+		if err := storage.SaveQueryDefinition(store, name, q); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("save query failed: %v", err)), nil
+		}
+		return mcp.NewToolResultText(fmt.Sprintf("query %s saved", name)), nil
+	})
+
+	s.AddTool(mcp.NewTool("delete_query",
+		mcp.WithDescription("Delete a named query definition"),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(true),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(false),
+		mcp.WithString("name", mcp.Required(), mcp.Description("Query name to delete")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		name := req.GetString("name", "")
+		if name == "" {
+			return mcp.NewToolResultError("name is required"), nil
+		}
+		if err := store.Delete(storage.QueryKey{Name: name}); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("delete query failed: %v", err)), nil
+		}
+		return mcp.NewToolResultText(fmt.Sprintf("query %s deleted", name)), nil
+	})
+
 	s.AddTool(mcp.NewTool("send_command",
 		mcp.WithDescription("Send a command to an entity via NATS"),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(false),
+		mcp.WithOpenWorldHintAnnotation(true),
 		mcp.WithString("plugin", mcp.Required()),
 		mcp.WithString("device", mcp.Required()),
 		mcp.WithString("entity", mcp.Required()),
