@@ -1,6 +1,7 @@
 import requests
+from script_env import get_base_url
 
-base_url = "http://127.0.0.1:29011"
+base_url = get_base_url()
 entities_url = f"{base_url}/entities"
 
 groups_mapping = {

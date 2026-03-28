@@ -13,15 +13,15 @@ func TestHelloDeclaresRuntimeDependencies(t *testing.T) {
 	}
 }
 
-func TestDefaultConfigUsesDefaultPort(t *testing.T) {
+func TestDefaultConfigDoesNotInventAPort(t *testing.T) {
 	t.Setenv("SB_API_PORT", "")
 	t.Setenv("SB_API_LISTEN_ADDR", "")
 	t.Setenv("SB_API_HTTP_URL", "")
 
 	cfg := DefaultConfig()
 
-	if cfg.ListenAddr != "127.0.0.1:29011" {
-		t.Fatalf("ListenAddr: got %q want %q", cfg.ListenAddr, "127.0.0.1:29011")
+	if cfg.ListenAddr != "" {
+		t.Fatalf("ListenAddr: got %q want empty", cfg.ListenAddr)
 	}
 	if cfg.HTTPURL != "127.0.0.1" {
 		t.Fatalf("HTTPURL: got %q want %q", cfg.HTTPURL, "127.0.0.1")

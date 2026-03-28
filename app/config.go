@@ -5,8 +5,6 @@ import (
 	"os"
 )
 
-const DefaultPort = "29011"
-
 // Config controls the importable API runtime.
 type Config struct {
 	ListenAddr string
@@ -19,7 +17,7 @@ func DefaultConfig() Config {
 		httpURL = v
 	}
 
-	listenAddr := fmt.Sprintf("127.0.0.1:%s", DefaultPort)
+	listenAddr := ""
 	if v := os.Getenv("SB_API_PORT"); v != "" {
 		listenAddr = fmt.Sprintf("127.0.0.1:%s", v)
 	}
