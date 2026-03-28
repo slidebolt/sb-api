@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -24,11 +26,16 @@ type ScriptDefinitionInput struct {
 	RawBody []byte `contentType:"text/plain"`
 }
 
-type ScriptStartStopInput struct {
+type ScriptInstanceStartInput struct {
 	Name string `path:"name"`
 	Body struct {
 		QueryRef string `json:"queryRef,omitempty"`
 	}
+}
+
+type ScriptInstanceStopInput struct {
+	Name string `path:"name"`
+	Hash string `path:"hash"`
 }
 
 type ScriptStartOutput struct {
@@ -37,7 +44,99 @@ type ScriptStartOutput struct {
 	}
 }
 
+type scriptDefinition struct {
+	Name   string `json:"name"`
+	Source string `json:"source"`
+}
+
+type scriptTrigger struct {
+	Kind       string  `json:"kind,omitempty"`
+	QueryRef   string  `json:"queryRef,omitempty"`
+	Query      string  `json:"query,omitempty"`
+	MinSeconds float64 `json:"minSeconds,omitempty"`
+	MaxSeconds float64 `json:"maxSeconds,omitempty"`
+}
+
+type scriptTargets struct {
+	Kind     string `json:"kind,omitempty"`
+	QueryRef string `json:"queryRef,omitempty"`
+	Query    string `json:"query,omitempty"`
+}
+
+type ScriptInstance struct {
+	Name            string        `json:"name"`
+	QueryRef        string        `json:"queryRef,omitempty"`
+	Hash            string        `json:"hash"`
+	Status          string        `json:"status,omitempty"`
+	Trigger         scriptTrigger `json:"trigger,omitempty"`
+	Targets         scriptTargets `json:"targets,omitempty"`
+	ResolvedTargets []string      `json:"resolvedTargets,omitempty"`
+	StartedAt       *time.Time    `json:"startedAt,omitempty"`
+	LastFiredAt     *time.Time    `json:"lastFiredAt,omitempty"`
+	NextFireAt      *time.Time    `json:"nextFireAt,omitempty"`
+	LastError       string        `json:"lastError,omitempty"`
+	FireCount       int           `json:"fireCount,omitempty"`
+	State           map[string]any `json:"state,omitempty"`
+}
+
+type Script struct {
+	Name      string           `json:"name"`
+	Source    string           `json:"source"`
+	Running   bool             `json:"running"`
+	Instances []ScriptInstance `json:"instances,omitempty"`
+}
+
+type ScriptsListOutput struct {
+	Body []Script
+}
+
+type ScriptGetOutput struct {
+	Body Script
+}
+
+type ScriptInstancesOutput struct {
+	Body []ScriptInstance
+}
+
 func RegisterScripts(api huma.API, store storage.Storage, msg messenger.Messenger) {
+	// GET /scripts — list all scripts with their instances
+	huma.Register(api, huma.Operation{
+		Method:      "GET",
+		Path:        "/scripts",
+		Summary:     "List scripts",
+		Description: "Returns saved script definitions with any running instances.",
+		Tags:        []string{"scripts"},
+	}, func(ctx context.Context, _ *struct{}) (*ScriptsListOutput, error) {
+		scripts, err := loadScripts(store)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("load scripts failed", err)
+		}
+		return &ScriptsListOutput{Body: scripts}, nil
+	})
+
+	// GET /scripts/{name} — get a single script with its instances
+	huma.Register(api, huma.Operation{
+		Method:      "GET",
+		Path:        "/scripts/{name}",
+		Summary:     "Get a script",
+		Description: "Returns a saved script definition and its running instances.",
+		Tags:        []string{"scripts"},
+	}, func(ctx context.Context, input *struct {
+		Name string `path:"name"`
+	}) (*ScriptGetOutput, error) {
+		scripts, err := loadScripts(store)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("load scripts failed", err)
+		}
+		for _, s := range scripts {
+			if s.Name == input.Name {
+				return &ScriptGetOutput{Body: s}, nil
+			}
+		}
+		return nil, huma.Error404NotFound("script not found")
+	})
+
+	// PUT /scripts/{name} — save or update a script definition
 	huma.Register(api, huma.Operation{
 		Method:      "PUT",
 		Path:        "/scripts/{name}",
@@ -64,13 +163,40 @@ func RegisterScripts(api huma.API, store storage.Storage, msg messenger.Messenge
 		return nil, nil
 	})
 
+	// GET /scripts/{name}/instances — list running instances for a script
+	huma.Register(api, huma.Operation{
+		Method:      "GET",
+		Path:        "/scripts/{name}/instances",
+		Summary:     "List running instances",
+		Description: "Returns currently running instances for a script.",
+		Tags:        []string{"scripts"},
+	}, func(ctx context.Context, input *struct {
+		Name string `path:"name"`
+	}) (*ScriptInstancesOutput, error) {
+		instances, err := loadScriptInstances(store)
+		if err != nil {
+			return nil, huma.Error500InternalServerError("load script instances failed", err)
+		}
+		var filtered []ScriptInstance
+		for _, inst := range instances {
+			if inst.Name == input.Name {
+				filtered = append(filtered, inst)
+			}
+		}
+		sort.Slice(filtered, func(i, j int) bool {
+			return filtered[i].Hash < filtered[j].Hash
+		})
+		return &ScriptInstancesOutput{Body: filtered}, nil
+	})
+
+	// POST /scripts/{name}/instances — start a new instance
 	huma.Register(api, huma.Operation{
 		Method:      "POST",
-		Path:        "/scripts/{name}/start",
+		Path:        "/scripts/{name}/instances",
 		Summary:     "Start a script instance",
 		Description: "Starts a named script in sb-script via NATS request/reply.",
 		Tags:        []string{"scripts"},
-	}, func(ctx context.Context, input *ScriptStartStopInput) (*ScriptStartOutput, error) {
+	}, func(ctx context.Context, input *ScriptInstanceStartInput) (*ScriptStartOutput, error) {
 		req := map[string]any{
 			"name":     input.Name,
 			"queryRef": input.Body.QueryRef,
@@ -84,16 +210,17 @@ func RegisterScripts(api huma.API, store storage.Storage, msg messenger.Messenge
 		return out, nil
 	})
 
+	// DELETE /scripts/{name}/instances/{hash} — stop a specific instance
 	huma.Register(api, huma.Operation{
 		Method:      "DELETE",
-		Path:        "/scripts/{name}/start",
+		Path:        "/scripts/{name}/instances/{hash}",
 		Summary:     "Stop a script instance",
-		Description: "Stops a named script in sb-script via NATS request/reply.",
+		Description: "Stops a specific script instance in sb-script via NATS request/reply.",
 		Tags:        []string{"scripts"},
-	}, func(ctx context.Context, input *ScriptStartStopInput) (*struct{}, error) {
+	}, func(ctx context.Context, input *ScriptInstanceStopInput) (*struct{}, error) {
 		req := map[string]any{
-			"name":     input.Name,
-			"queryRef": input.Body.QueryRef,
+			"name": input.Name,
+			"hash": input.Hash,
 		}
 		if err := requestScriptAPI(msg, "script.stop", req, nil); err != nil {
 			return nil, err
@@ -124,4 +251,71 @@ func requestScriptAPI(msg messenger.Messenger, subject string, body any, dest *s
 		*dest = resp
 	}
 	return nil
+}
+
+func loadScripts(store storage.Storage) ([]Script, error) {
+	defEntries, err := store.Search("sb-script.scripts.>")
+	if err != nil {
+		return nil, err
+	}
+	instEntries, err := store.Search("sb-script.instances.>")
+	if err != nil {
+		return nil, err
+	}
+
+	byName := map[string]*Script{}
+	for _, entry := range defEntries {
+		if strings.Count(entry.Key, ".") < 2 {
+			continue
+		}
+		var def scriptDefinition
+		if err := json.Unmarshal(entry.Data, &def); err != nil {
+			continue
+		}
+		byName[def.Name] = &Script{Name: def.Name, Source: def.Source}
+	}
+
+	for _, entry := range instEntries {
+		var inst ScriptInstance
+		if err := json.Unmarshal(entry.Data, &inst); err != nil {
+			continue
+		}
+		s, ok := byName[inst.Name]
+		if !ok {
+			s = &Script{Name: inst.Name}
+			byName[inst.Name] = s
+		}
+		s.Running = true
+		s.Instances = append(s.Instances, inst)
+	}
+
+	names := make([]string, 0, len(byName))
+	for name := range byName {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	out := make([]Script, 0, len(names))
+	for _, name := range names {
+		s := byName[name]
+		sort.Slice(s.Instances, func(i, j int) bool { return s.Instances[i].Hash < s.Instances[j].Hash })
+		out = append(out, *s)
+	}
+	return out, nil
+}
+
+func loadScriptInstances(store storage.Storage) ([]ScriptInstance, error) {
+	instEntries, err := store.Search("sb-script.instances.>")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ScriptInstance, 0, len(instEntries))
+	for _, entry := range instEntries {
+		var inst ScriptInstance
+		if err := json.Unmarshal(entry.Data, &inst); err != nil {
+			continue
+		}
+		out = append(out, inst)
+	}
+	return out, nil
 }

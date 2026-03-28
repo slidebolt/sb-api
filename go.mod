@@ -5,6 +5,7 @@ go 1.26.1
 require (
 	github.com/danielgtaylor/huma/v2 v2.37.2
 	github.com/go-chi/chi/v5 v5.2.5
+	github.com/gorilla/websocket v1.5.3
 	github.com/mark3labs/mcp-go v0.45.0
 	github.com/slidebolt/sb-contract v1.0.2
 	github.com/slidebolt/sb-domain v1.0.2

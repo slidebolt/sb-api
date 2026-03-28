@@ -3,6 +3,7 @@ package routes
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 
 	"github.com/danielgtaylor/huma/v2"
 	domain "github.com/slidebolt/sb-domain"
@@ -167,6 +168,19 @@ func RegisterEntities(api huma.API, store storage.Storage, msg messenger.Messeng
 		Tags:        []string{"commands"},
 	}, func(ctx context.Context, input *CommandInput) (*struct{}, error) {
 		subject := input.Plugin + "." + input.DeviceID + "." + input.EntityID + ".command." + input.Action
+
+		// If the action is registered in the domain, validate the payload
+		// against the registered type before publishing. This catches type
+		// mismatches (e.g. brightness="potato") at the API boundary.
+		// Unknown actions pass through unchanged — the API is a gateway and
+		// cannot know every plugin's custom command types.
+		if typ, ok := domain.LookupCommand(input.Action); ok {
+			v := reflect.New(typ).Interface()
+			if err := json.Unmarshal(input.Body, v); err != nil {
+				return nil, huma.Error400BadRequest("invalid payload for "+input.Action+": "+err.Error(), err)
+			}
+		}
+
 		if err := msg.Publish(subject, input.Body); err != nil {
 			return nil, huma.Error500InternalServerError("publish failed", err)
 		}

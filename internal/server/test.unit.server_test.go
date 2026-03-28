@@ -6,13 +6,21 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	domain "github.com/slidebolt/sb-domain"
 	messenger "github.com/slidebolt/sb-messenger-sdk"
 	storage "github.com/slidebolt/sb-storage-sdk"
+
+	"github.com/slidebolt/sb-api/internal/auth"
 )
+
+// ---------------------------------------------------------------------------
+// fakeStore
+// ---------------------------------------------------------------------------
 
 type fakeStore struct {
 	searchPattern  string
@@ -113,6 +121,53 @@ func (f *fakeStore) SetProfile(key storage.Keyed, data json.RawMessage) error {
 
 func (f *fakeStore) Close() {}
 
+// ---------------------------------------------------------------------------
+// test helpers
+// ---------------------------------------------------------------------------
+
+const testTokenSecret = "test-token-secret"
+
+func seedToken(store *fakeStore, scopes []string) {
+	hash := auth.HashSecret(testTokenSecret)
+	data, _ := json.Marshal(auth.Token{
+		ID:        "test-token",
+		Name:      "Test",
+		Hash:      hash,
+		Scopes:    scopes,
+		CreatedAt: time.Now().UTC(),
+	})
+	if store.searchResultsByPattern == nil {
+		store.searchResultsByPattern = map[string][]storage.Entry{}
+	}
+	store.searchResultsByPattern["sb-api.tokens.>"] = []storage.Entry{
+		{Key: "sb-api.tokens.test-token", Data: data},
+	}
+}
+
+func authGet(url string) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+testTokenSecret)
+	return http.DefaultClient.Do(req)
+}
+
+func authPost(url, contentType string, body []byte) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Authorization", "Bearer "+testTokenSecret)
+	return http.DefaultClient.Do(req)
+}
+
+func authDo(req *http.Request) (*http.Response, error) {
+	req.Header.Set("Authorization", "Bearer "+testTokenSecret)
+	return http.DefaultClient.Do(req)
+}
+
 func decodeBody(t *testing.T, resp *http.Response, dest any) {
 	t.Helper()
 	defer resp.Body.Close()
@@ -122,6 +177,13 @@ func decodeBody(t *testing.T, resp *http.Response, dest any) {
 	}
 	if err := json.Unmarshal(body, dest); err != nil {
 		t.Fatalf("unmarshal %s: %v", string(body), err)
+	}
+}
+
+func decodeWS(t *testing.T, conn *websocket.Conn, dest any) {
+	t.Helper()
+	if err := conn.ReadJSON(dest); err != nil {
+		t.Fatalf("read websocket json: %v", err)
 	}
 }
 
@@ -136,6 +198,492 @@ func subscribeScriptAPI(t *testing.T, msg messenger.Messenger, subject string, h
 	}
 }
 
+func mustJSON(t *testing.T, v any) json.RawMessage {
+	t.Helper()
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+// ---------------------------------------------------------------------------
+// Auth middleware tests
+// ---------------------------------------------------------------------------
+
+func TestAuth_BootstrapMode(t *testing.T) {
+	msg, err := messenger.Mock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer msg.Close()
+
+	store := &fakeStore{}
+	srv := httptest.NewServer(New(msg, store))
+	defer srv.Close()
+
+	// No tokens exist — all endpoints blocked except POST /tokens.
+	resp, err := http.Get(srv.URL + "/devices")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("bootstrap GET /devices: got %d want %d", resp.StatusCode, http.StatusForbidden)
+	}
+
+	resp, err = http.Get(srv.URL + "/entities")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("bootstrap GET /entities: got %d want %d", resp.StatusCode, http.StatusForbidden)
+	}
+
+	// POST /tokens should be allowed (bootstrap).
+	resp, err = http.Post(srv.URL+"/tokens", "application/json",
+		bytes.NewReader([]byte(`{"name":"Admin","scopes":["read","control","write","admin"]}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("bootstrap POST /tokens: got %d want %d body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+
+	var created map[string]any
+	decodeBody(t, resp, &created)
+	if created["token"] == nil || created["token"] == "" {
+		t.Fatalf("expected token secret in response: %+v", created)
+	}
+	if created["id"] == nil || created["id"] == "" {
+		t.Fatalf("expected id in response: %+v", created)
+	}
+}
+
+func TestAuth_MissingToken(t *testing.T) {
+	msg, err := messenger.Mock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer msg.Close()
+
+	store := &fakeStore{}
+	seedToken(store, []string{"read", "control", "write", "admin"})
+	srv := httptest.NewServer(New(msg, store))
+	defer srv.Close()
+
+	// No Authorization header.
+	resp, err := http.Get(srv.URL + "/devices")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("missing token: got %d want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+func TestAuth_WebSocketBootstrapModeForbidden(t *testing.T) {
+	msg, err := messenger.Mock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer msg.Close()
+
+	store := &fakeStore{}
+	srv := httptest.NewServer(New(msg, store))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws/events"
+	_, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err == nil {
+		t.Fatal("expected websocket dial to fail without bootstrap token")
+	}
+	if resp == nil {
+		t.Fatalf("expected handshake response, got nil: %v", err)
+	}
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("websocket bootstrap: got %d want %d", resp.StatusCode, http.StatusForbidden)
+	}
+}
+
+func TestWebSocketEvents_StreamSnapshotAndUpdates(t *testing.T) {
+	msg, err := messenger.Mock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer msg.Close()
+
+	initial := mustJSON(t, map[string]any{
+		"id":    "ent1",
+		"state": map[string]any{"power": false},
+	})
+	updated := mustJSON(t, map[string]any{
+		"id":    "ent1",
+		"state": map[string]any{"power": true},
+	})
+	store := &fakeStore{
+		searchResult: []storage.Entry{
+			{Key: "plugin.dev1.ent1", Data: initial},
+		},
+	}
+	seedToken(store, []string{"read"})
+
+	srv := httptest.NewServer(New(msg, store))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws/events?pattern=plugin.dev1.>"
+	header := http.Header{}
+	header.Set("Authorization", "Bearer "+testTokenSecret)
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		if resp != nil {
+			t.Fatalf("dial websocket: %v (status %d)", err, resp.StatusCode)
+		}
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer conn.Close()
+
+	var snapshot struct {
+		Type    string          `json:"type"`
+		Pattern string          `json:"pattern"`
+		Items   []storage.Entry `json:"items"`
+	}
+	decodeWS(t, conn, &snapshot)
+	if snapshot.Type != "snapshot" {
+		t.Fatalf("snapshot type: got %q want %q", snapshot.Type, "snapshot")
+	}
+	if snapshot.Pattern != "plugin.dev1.>" {
+		t.Fatalf("snapshot pattern: got %q want %q", snapshot.Pattern, "plugin.dev1.>")
+	}
+	if len(snapshot.Items) != 1 || snapshot.Items[0].Key != "plugin.dev1.ent1" {
+		t.Fatalf("snapshot items: got %+v", snapshot.Items)
+	}
+	if got := store.searchPattern; got != "plugin.dev1.>" {
+		t.Fatalf("search pattern: got %q want %q", got, "plugin.dev1.>")
+	}
+
+	if err := msg.Publish("state.changed.plugin.dev1.ent1", updated); err != nil {
+		t.Fatal(err)
+	}
+
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	var event struct {
+		Type string          `json:"type"`
+		Key  string          `json:"key"`
+		Data json.RawMessage `json:"data"`
+	}
+	decodeWS(t, conn, &event)
+	if event.Type != "upsert" {
+		t.Fatalf("event type: got %q want %q", event.Type, "upsert")
+	}
+	if event.Key != "plugin.dev1.ent1" {
+		t.Fatalf("event key: got %q want %q", event.Key, "plugin.dev1.ent1")
+	}
+	if string(event.Data) != string(updated) {
+		t.Fatalf("event data: got %s want %s", string(event.Data), string(updated))
+	}
+}
+
+func TestWebSocketEvents_AcceptsAccessTokenQuery(t *testing.T) {
+	msg, err := messenger.Mock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer msg.Close()
+
+	store := &fakeStore{}
+	seedToken(store, []string{"read"})
+	srv := httptest.NewServer(New(msg, store))
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws/events?access_token=" + testTokenSecret
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		if resp != nil {
+			t.Fatalf("dial websocket with query token: %v (status %d)", err, resp.StatusCode)
+		}
+		t.Fatalf("dial websocket with query token: %v", err)
+	}
+	defer conn.Close()
+
+	var snapshot struct {
+		Type string `json:"type"`
+	}
+	decodeWS(t, conn, &snapshot)
+	if snapshot.Type != "snapshot" {
+		t.Fatalf("snapshot type: got %q want %q", snapshot.Type, "snapshot")
+	}
+}
+
+func TestAuth_InvalidToken(t *testing.T) {
+	msg, err := messenger.Mock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer msg.Close()
+
+	store := &fakeStore{}
+	seedToken(store, []string{"read", "control", "write", "admin"})
+	srv := httptest.NewServer(New(msg, store))
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/devices", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer wrong-secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("invalid token: got %d want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+func TestAuth_InsufficientScope_ReadOnly(t *testing.T) {
+	msg, err := messenger.Mock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer msg.Close()
+
+	store := &fakeStore{
+		searchResult: []storage.Entry{
+			{Key: "plugin.dev1", Data: json.RawMessage(`{"name":"Device 1"}`)},
+		},
+	}
+	seedToken(store, []string{"read"})
+	srv := httptest.NewServer(New(msg, store))
+	defer srv.Close()
+
+	// Read should work.
+	resp, err := authGet(srv.URL + "/devices")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("read-scoped GET /devices: got %d want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	// Command (control scope) should fail.
+	resp, err = authPost(srv.URL+"/entities/plugin/dev1/ent1/command/turn_on", "application/json", []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("read-scoped POST command: got %d want %d", resp.StatusCode, http.StatusForbidden)
+	}
+
+	// Write should fail.
+	req, err := http.NewRequest(http.MethodPut, srv.URL+"/devices/plugin/dev2", bytes.NewReader([]byte(`{
+		"id":"dev2","plugin":"plugin","name":"Device 2","entities":[]
+	}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err = authDo(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("read-scoped PUT device: got %d want %d", resp.StatusCode, http.StatusForbidden)
+	}
+
+	// Admin should fail.
+	resp, err = authGet(srv.URL + "/tokens")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("read-scoped GET /tokens: got %d want %d", resp.StatusCode, http.StatusForbidden)
+	}
+}
+
+func TestAuth_ControlScope(t *testing.T) {
+	msg, err := messenger.Mock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer msg.Close()
+
+	store := &fakeStore{}
+	seedToken(store, []string{"control"})
+
+	commandCh := make(chan *messenger.Message, 1)
+	_, err = msg.Subscribe("plugin.dev1.ent1.command.turn_on", func(m *messenger.Message) {
+		commandCh <- m
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := msg.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(New(msg, store))
+	defer srv.Close()
+
+	// Command should work.
+	resp, err := authPost(srv.URL+"/entities/plugin/dev1/ent1/command/turn_on", "application/json", []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("control-scoped POST command: got %d want %d", resp.StatusCode, http.StatusNoContent)
+	}
+
+	select {
+	case <-commandCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected command publish")
+	}
+
+	// Read should fail.
+	resp, err = authGet(srv.URL + "/devices")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("control-scoped GET /devices: got %d want %d", resp.StatusCode, http.StatusForbidden)
+	}
+}
+
+func TestAuth_QueryIsReadScope(t *testing.T) {
+	msg, err := messenger.Mock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer msg.Close()
+
+	store := &fakeStore{
+		queryResult: []storage.Entry{
+			{Key: "plugin.dev1.ent1", Data: json.RawMessage(`{"id":"ent1"}`)},
+		},
+	}
+	seedToken(store, []string{"read"})
+	srv := httptest.NewServer(New(msg, store))
+	defer srv.Close()
+
+	resp, err := authPost(srv.URL+"/query", "application/json", []byte(`{"pattern":"plugin.dev1.*"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("read-scoped POST /query: got %d want %d", resp.StatusCode, http.StatusOK)
+	}
+	resp.Body.Close()
+}
+
+func TestAuth_TokenCRUD(t *testing.T) {
+	msg, err := messenger.Mock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer msg.Close()
+
+	store := &fakeStore{}
+	seedToken(store, []string{"admin"})
+	srv := httptest.NewServer(New(msg, store))
+	defer srv.Close()
+
+	// Create a new token.
+	resp, err := authPost(srv.URL+"/tokens", "application/json",
+		[]byte(`{"name":"Dashboard","scopes":["read"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("POST /tokens: got %d want %d body=%s", resp.StatusCode, http.StatusOK, body)
+	}
+	var created map[string]any
+	decodeBody(t, resp, &created)
+	if created["token"] == nil || created["token"] == "" {
+		t.Fatalf("expected token secret in response: %+v", created)
+	}
+
+	// List tokens.
+	resp, err = authGet(srv.URL + "/tokens")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /tokens: got %d want %d", resp.StatusCode, http.StatusOK)
+	}
+	resp.Body.Close()
+
+	// Delete a token.
+	req, err := http.NewRequest(http.MethodDelete, srv.URL+"/tokens/some-id", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err = authDo(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE /tokens: got %d want %d", resp.StatusCode, http.StatusNoContent)
+	}
+	if store.deletedKey != "sb-api.tokens.some-id" {
+		t.Fatalf("deleted key: got %q want %q", store.deletedKey, "sb-api.tokens.some-id")
+	}
+}
+
+func TestAuth_TokenValidation(t *testing.T) {
+	msg, err := messenger.Mock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer msg.Close()
+
+	store := &fakeStore{}
+	seedToken(store, []string{"admin"})
+	srv := httptest.NewServer(New(msg, store))
+	defer srv.Close()
+
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+	}{
+		{"missing name", `{"scopes":["read"]}`, http.StatusUnprocessableEntity},
+		{"missing scopes", `{"name":"Test"}`, http.StatusUnprocessableEntity},
+		{"empty scopes", `{"name":"Test","scopes":[]}`, http.StatusUnprocessableEntity},
+		{"invalid scope", `{"name":"Test","scopes":["root"]}`, http.StatusUnprocessableEntity},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := authPost(srv.URL+"/tokens", "application/json", []byte(tt.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != tt.wantStatus {
+				t.Fatalf("status: got %d want %d", resp.StatusCode, tt.wantStatus)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Device routes
+// ---------------------------------------------------------------------------
+
 func TestDevicesRoutes_ListAndUpsert(t *testing.T) {
 	msg, err := messenger.Mock()
 	if err != nil {
@@ -149,11 +697,12 @@ func TestDevicesRoutes_ListAndUpsert(t *testing.T) {
 			{Key: "plugin.dev1.ent1", Data: json.RawMessage(`{"name":"Entity 1"}`)},
 		},
 	}
+	seedToken(store, []string{"read", "write", "control", "admin"})
 
 	srv := httptest.NewServer(New(msg, store))
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/devices")
+	resp, err := authGet(srv.URL + "/devices")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,9 +712,6 @@ func TestDevicesRoutes_ListAndUpsert(t *testing.T) {
 
 	var devices []map[string]any
 	decodeBody(t, resp, &devices)
-	if store.searchPattern != "*.*" {
-		t.Fatalf("search pattern: got %q want %q", store.searchPattern, "*.*")
-	}
 	if len(devices) != 1 || devices[0]["key"] != "plugin.dev1" {
 		t.Fatalf("unexpected devices response: %+v", devices)
 	}
@@ -182,7 +728,7 @@ func TestDevicesRoutes_ListAndUpsert(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err = http.DefaultClient.Do(req)
+	resp, err = authDo(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,6 +771,7 @@ func TestDevicesRoutes_SetProfile(t *testing.T) {
 	defer msg.Close()
 
 	store := &fakeStore{}
+	seedToken(store, []string{"read", "write", "control", "admin"})
 	srv := httptest.NewServer(New(msg, store))
 	defer srv.Close()
 
@@ -236,7 +783,7 @@ func TestDevicesRoutes_SetProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := authDo(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,6 +807,10 @@ func TestDevicesRoutes_SetProfile(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Entity routes
+// ---------------------------------------------------------------------------
+
 func TestEntitiesCommandAndQueryRoutes(t *testing.T) {
 	msg, err := messenger.Mock()
 	if err != nil {
@@ -273,6 +824,7 @@ func TestEntitiesCommandAndQueryRoutes(t *testing.T) {
 			{Key: "plugin.dev1.ent1", Data: json.RawMessage(`{"id":"ent1"}`)},
 		},
 	}
+	seedToken(store, []string{"read", "write", "control", "admin"})
 
 	commandCh := make(chan *messenger.Message, 1)
 	_, err = msg.Subscribe("plugin.dev1.ent1.command.turn_on", func(m *messenger.Message) {
@@ -288,7 +840,7 @@ func TestEntitiesCommandAndQueryRoutes(t *testing.T) {
 	srv := httptest.NewServer(New(msg, store))
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/entities/plugin/dev1/ent1")
+	resp, err := authGet(srv.URL + "/entities/plugin/dev1/ent1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +854,7 @@ func TestEntitiesCommandAndQueryRoutes(t *testing.T) {
 	}
 
 	queryBody := `{"pattern":"plugin.dev1.*","where":[{"field":"state.power","op":"eq","value":true}]}`
-	resp, err = http.Post(srv.URL+"/query", "application/json", bytes.NewReader([]byte(queryBody)))
+	resp, err = authPost(srv.URL+"/query", "application/json", []byte(queryBody))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +870,7 @@ func TestEntitiesCommandAndQueryRoutes(t *testing.T) {
 		t.Fatalf("unexpected query response: %+v", results)
 	}
 
-	resp, err = http.Post(srv.URL+"/entities/plugin/dev1/ent1/command/turn_on", "application/json", bytes.NewReader([]byte(`{"level":42}`)))
+	resp, err = authPost(srv.URL+"/entities/plugin/dev1/ent1/command/turn_on", "application/json", []byte(`{"level":42}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,6 +897,7 @@ func TestEntitiesCommandRoutes_GroupScriptCommands(t *testing.T) {
 	defer msg.Close()
 
 	store := &fakeStore{}
+	seedToken(store, []string{"read", "write", "control", "admin"})
 
 	runCh := make(chan *messenger.Message, 1)
 	_, err = msg.Subscribe("plugin-automation.group.basement.command.script_run", func(m *messenger.Message) {
@@ -369,10 +922,10 @@ func TestEntitiesCommandRoutes_GroupScriptCommands(t *testing.T) {
 	srv := httptest.NewServer(New(msg, store))
 	defer srv.Close()
 
-	resp, err := http.Post(
+	resp, err := authPost(
 		srv.URL+"/entities/plugin-automation/group/basement/command/script_run",
 		"application/json",
-		bytes.NewReader([]byte(`{"name":"party_time"}`)),
+		[]byte(`{"name":"party_time"}`),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -400,7 +953,7 @@ func TestEntitiesCommandRoutes_GroupScriptCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err = http.DefaultClient.Do(req)
+	resp, err = authDo(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,6 +980,7 @@ func TestEntitiesRoutes_UpsertAndDelete(t *testing.T) {
 	defer msg.Close()
 
 	store := &fakeStore{}
+	seedToken(store, []string{"read", "write", "control", "admin"})
 
 	srv := httptest.NewServer(New(msg, store))
 	defer srv.Close()
@@ -444,7 +998,7 @@ func TestEntitiesRoutes_UpsertAndDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := authDo(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -475,7 +1029,7 @@ func TestEntitiesRoutes_UpsertAndDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err = http.DefaultClient.Do(req)
+	resp, err = authDo(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,11 +1056,12 @@ func TestEntitiesRoutes_List(t *testing.T) {
 			{Key: "plugin.dev1.ent2", Data: json.RawMessage(`{"id":"ent2"}`)},
 		},
 	}
+	seedToken(store, []string{"read", "write", "control", "admin"})
 
 	srv := httptest.NewServer(New(msg, store))
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/entities")
+	resp, err := authGet(srv.URL + "/entities")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -515,9 +1070,6 @@ func TestEntitiesRoutes_List(t *testing.T) {
 	}
 	var entities []map[string]any
 	decodeBody(t, resp, &entities)
-	if store.searchPattern != "*.*.*" {
-		t.Fatalf("search pattern: got %q want %q", store.searchPattern, "*.*.*")
-	}
 	if len(entities) != 3 {
 		t.Fatalf("expected 3 entities, got %d: %+v", len(entities), entities)
 	}
@@ -531,6 +1083,7 @@ func TestEntitiesRoutes_UpsertValidation_KnownAndCustomTypes(t *testing.T) {
 	defer msg.Close()
 
 	store := &fakeStore{}
+	seedToken(store, []string{"read", "write", "control", "admin"})
 	srv := httptest.NewServer(New(msg, store))
 	defer srv.Close()
 
@@ -547,7 +1100,7 @@ func TestEntitiesRoutes_UpsertValidation_KnownAndCustomTypes(t *testing.T) {
 			t.Fatal(err)
 		}
 		req.Header.Set("Content-Type", "application/json")
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := authDo(req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -582,7 +1135,7 @@ func TestEntitiesRoutes_UpsertValidation_KnownAndCustomTypes(t *testing.T) {
 			t.Fatal(err)
 		}
 		req.Header.Set("Content-Type", "application/json")
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := authDo(req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -613,6 +1166,7 @@ func TestEntitiesRoutes_UpsertValidation_RejectsBadJSON(t *testing.T) {
 	defer msg.Close()
 
 	store := &fakeStore{}
+	seedToken(store, []string{"read", "write", "control", "admin"})
 	srv := httptest.NewServer(New(msg, store))
 	defer srv.Close()
 
@@ -673,7 +1227,7 @@ func TestEntitiesRoutes_UpsertValidation_RejectsBadJSON(t *testing.T) {
 				t.Fatal(err)
 			}
 			req.Header.Set("Content-Type", "application/json")
-			resp, err := http.DefaultClient.Do(req)
+			resp, err := authDo(req)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -688,6 +1242,10 @@ func TestEntitiesRoutes_UpsertValidation_RejectsBadJSON(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Script routes
+// ---------------------------------------------------------------------------
+
 func TestScriptsRoutes_SaveDefinition(t *testing.T) {
 	msg, err := messenger.Mock()
 	if err != nil {
@@ -696,6 +1254,7 @@ func TestScriptsRoutes_SaveDefinition(t *testing.T) {
 	defer msg.Close()
 
 	store := &fakeStore{}
+	seedToken(store, []string{"read", "write", "control", "admin"})
 
 	srv := httptest.NewServer(New(msg, store))
 	defer srv.Close()
@@ -706,7 +1265,7 @@ func TestScriptsRoutes_SaveDefinition(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "text/plain")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := authDo(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -734,6 +1293,7 @@ func TestScriptsRoutes_Start(t *testing.T) {
 	defer msg.Close()
 
 	store := &fakeStore{}
+	seedToken(store, []string{"read", "write", "control", "admin"})
 	reqCh := make(chan map[string]any, 1)
 	subscribeScriptAPI(t, msg, "script.start", func(m *messenger.Message) {
 		var req map[string]any
@@ -748,7 +1308,7 @@ func TestScriptsRoutes_Start(t *testing.T) {
 	srv := httptest.NewServer(New(msg, store))
 	defer srv.Close()
 
-	resp, err := http.Post(srv.URL+"/scripts/PartyTime/start", "application/json", bytes.NewReader([]byte(`{"queryRef":"room_main"}`)))
+	resp, err := authPost(srv.URL+"/scripts/PartyTime/instances", "application/json", []byte(`{"queryRef":"room_main"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -780,6 +1340,7 @@ func TestScriptsRoutes_Stop(t *testing.T) {
 	defer msg.Close()
 
 	store := &fakeStore{}
+	seedToken(store, []string{"read", "write", "control", "admin"})
 	reqCh := make(chan map[string]any, 1)
 	subscribeScriptAPI(t, msg, "script.stop", func(m *messenger.Message) {
 		var req map[string]any
@@ -794,12 +1355,11 @@ func TestScriptsRoutes_Stop(t *testing.T) {
 	srv := httptest.NewServer(New(msg, store))
 	defer srv.Close()
 
-	req, err := http.NewRequest(http.MethodDelete, srv.URL+"/scripts/PartyTime/start", bytes.NewReader([]byte(`{"queryRef":"room_main"}`)))
+	req, err := http.NewRequest(http.MethodDelete, srv.URL+"/scripts/PartyTime/instances/abc123", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := authDo(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -810,7 +1370,7 @@ func TestScriptsRoutes_Stop(t *testing.T) {
 
 	select {
 	case got := <-reqCh:
-		if got["name"] != "PartyTime" || got["queryRef"] != "room_main" {
+		if got["name"] != "PartyTime" || got["hash"] != "abc123" {
 			t.Fatalf("unexpected stop request: %+v", got)
 		}
 	case <-time.After(2 * time.Second):
@@ -818,7 +1378,7 @@ func TestScriptsRoutes_Stop(t *testing.T) {
 	}
 }
 
-func TestAutomationsRoutes_ListAndRunning(t *testing.T) {
+func TestScriptsRoutes_ListAndInstances(t *testing.T) {
 	msg, err := messenger.Mock()
 	if err != nil {
 		t.Fatal(err)
@@ -852,37 +1412,37 @@ func TestAutomationsRoutes_ListAndRunning(t *testing.T) {
 			},
 		},
 	}
+	seedToken(store, []string{"read", "write", "control", "admin"})
 
 	srv := httptest.NewServer(New(msg, store))
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/automations")
+	// GET /scripts — list all scripts with instances
+	resp, err := authGet(srv.URL + "/scripts")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: got %d want %d", resp.StatusCode, http.StatusOK)
 	}
-	var automations []map[string]any
-	decodeBody(t, resp, &automations)
-	if len(automations) != 2 {
-		t.Fatalf("automations len: got %d want 2", len(automations))
+	var scripts []map[string]any
+	decodeBody(t, resp, &scripts)
+	if len(scripts) != 2 {
+		t.Fatalf("scripts len: got %d want 2", len(scripts))
 	}
-	if automations[0]["name"] != "PartyTime" || automations[1]["name"] != "WelcomeHome" {
-		t.Fatalf("unexpected automations order/body: %+v", automations)
+	if scripts[0]["name"] != "PartyTime" || scripts[1]["name"] != "WelcomeHome" {
+		t.Fatalf("unexpected scripts order/body: %+v", scripts)
 	}
-	if automations[0]["running"] != true {
-		t.Fatalf("expected PartyTime running: %+v", automations[0])
+	if scripts[0]["running"] != true {
+		t.Fatalf("expected PartyTime running: %+v", scripts[0])
 	}
-	instances, ok := automations[0]["instances"].([]any)
+	instances, ok := scripts[0]["instances"].([]any)
 	if !ok || len(instances) != 1 {
-		t.Fatalf("expected one running instance, got %+v", automations[0]["instances"])
-	}
-	if len(store.searchPatterns) < 2 || store.searchPatterns[0] != "sb-script.scripts.>" || store.searchPatterns[1] != "sb-script.instances.>" {
-		t.Fatalf("unexpected search patterns: %+v", store.searchPatterns)
+		t.Fatalf("expected one running instance, got %+v", scripts[0]["instances"])
 	}
 
-	resp, err = http.Get(srv.URL + "/automations/running")
+	// GET /scripts/PartyTime/instances — list instances for a specific script
+	resp, err = authGet(srv.URL + "/scripts/PartyTime/instances")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -892,14 +1452,14 @@ func TestAutomationsRoutes_ListAndRunning(t *testing.T) {
 	var running []map[string]any
 	decodeBody(t, resp, &running)
 	if len(running) != 1 || running[0]["hash"] != "a1b2" {
-		t.Fatalf("unexpected running response: %+v", running)
+		t.Fatalf("unexpected instances response: %+v", running)
 	}
 	if running[0]["name"] != "PartyTime" || running[0]["queryRef"] != "group_main_lb" {
-		t.Fatalf("unexpected running instance body: %+v", running[0])
+		t.Fatalf("unexpected instance body: %+v", running[0])
 	}
 }
 
-func TestAutomationsRoutes_GetOne(t *testing.T) {
+func TestScriptsRoutes_GetOne(t *testing.T) {
 	msg, err := messenger.Mock()
 	if err != nil {
 		t.Fatal(err)
@@ -916,24 +1476,25 @@ func TestAutomationsRoutes_GetOne(t *testing.T) {
 			},
 		},
 	}
+	seedToken(store, []string{"read", "write", "control", "admin"})
 
 	srv := httptest.NewServer(New(msg, store))
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/automations/PartyTime")
+	resp, err := authGet(srv.URL + "/scripts/PartyTime")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: got %d want %d", resp.StatusCode, http.StatusOK)
 	}
-	var automation map[string]any
-	decodeBody(t, resp, &automation)
-	if automation["name"] != "PartyTime" || automation["running"] != true {
-		t.Fatalf("unexpected automation response: %+v", automation)
+	var script map[string]any
+	decodeBody(t, resp, &script)
+	if script["name"] != "PartyTime" || script["running"] != true {
+		t.Fatalf("unexpected script response: %+v", script)
 	}
 
-	resp, err = http.Get(srv.URL + "/automations/Missing")
+	resp, err = authGet(srv.URL + "/scripts/Missing")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -943,11 +1504,148 @@ func TestAutomationsRoutes_GetOne(t *testing.T) {
 	}
 }
 
-func mustJSON(t *testing.T, v any) json.RawMessage {
-	t.Helper()
-	data, err := json.Marshal(v)
+// ---------------------------------------------------------------------------
+// Command validation
+// ---------------------------------------------------------------------------
+
+func TestCommandRoute_RejectsMalformedPayload(t *testing.T) {
+	msg, err := messenger.Mock()
 	if err != nil {
 		t.Fatal(err)
 	}
-	return data
+	defer msg.Close()
+
+	store := &fakeStore{}
+	seedToken(store, []string{"read", "write", "control", "admin"})
+
+	published := make(chan struct{}, 1)
+	if _, err := msg.Subscribe("plugin.dev1.light1.command.light_set_brightness", func(m *messenger.Message) {
+		published <- struct{}{}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := msg.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(New(msg, store))
+	defer srv.Close()
+
+	resp, err := authPost(
+		srv.URL+"/entities/plugin/dev1/light1/command/light_set_brightness",
+		"application/json",
+		[]byte(`{"brightness":"potato"}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status: got %d want %d (malformed payload should be rejected)", resp.StatusCode, http.StatusBadRequest)
+	}
+
+	select {
+	case <-published:
+		t.Fatal("command was published to NATS despite malformed payload")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestCommandRoute_KnownActionValidPayload(t *testing.T) {
+	msg, err := messenger.Mock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer msg.Close()
+
+	store := &fakeStore{}
+	seedToken(store, []string{"read", "write", "control", "admin"})
+
+	published := make(chan []byte, 1)
+	if _, err := msg.Subscribe("plugin.dev1.light1.command.light_set_brightness", func(m *messenger.Message) {
+		published <- m.Data
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := msg.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(New(msg, store))
+	defer srv.Close()
+
+	resp, err := authPost(
+		srv.URL+"/entities/plugin/dev1/light1/command/light_set_brightness",
+		"application/json",
+		[]byte(`{"brightness":200}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status: got %d want %d", resp.StatusCode, http.StatusNoContent)
+	}
+
+	select {
+	case data := <-published:
+		var cmd domain.LightSetBrightness
+		if err := json.Unmarshal(data, &cmd); err != nil {
+			t.Fatalf("unmarshal published command: %v", err)
+		}
+		if cmd.Brightness != 200 {
+			t.Fatalf("brightness: got %d want 200", cmd.Brightness)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for command publish")
+	}
+}
+
+func TestCommandRoute_UnknownActionPassesThrough(t *testing.T) {
+	msg, err := messenger.Mock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer msg.Close()
+
+	store := &fakeStore{}
+	seedToken(store, []string{"read", "write", "control", "admin"})
+
+	published := make(chan []byte, 1)
+	if _, err := msg.Subscribe("plugin-automation.group.living.command.script_run", func(m *messenger.Message) {
+		published <- m.Data
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := msg.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(New(msg, store))
+	defer srv.Close()
+
+	resp, err := authPost(
+		srv.URL+"/entities/plugin-automation/group/living/command/script_run",
+		"application/json",
+		[]byte(`{"name":"party_time"}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status: got %d want %d (unknown actions should pass through)", resp.StatusCode, http.StatusNoContent)
+	}
+
+	select {
+	case data := <-published:
+		if string(data) != `{"name":"party_time"}` {
+			t.Fatalf("payload: got %s", string(data))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for plugin-specific command")
+	}
 }
