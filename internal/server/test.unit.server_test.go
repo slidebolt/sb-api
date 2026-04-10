@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -11,7 +12,11 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	mcpsrv "github.com/mark3labs/mcp-go/server"
 	domain "github.com/slidebolt/sb-domain"
+	logcfg "github.com/slidebolt/sb-logging"
+	logging "github.com/slidebolt/sb-logging-sdk"
+	logserver "github.com/slidebolt/sb-logging/server"
 	messenger "github.com/slidebolt/sb-messenger-sdk"
 	storage "github.com/slidebolt/sb-storage-sdk"
 
@@ -207,6 +212,112 @@ func mustJSON(t *testing.T, v any) json.RawMessage {
 	return data
 }
 
+func mcpPost(t *testing.T, url string, body any, sessionID string) *http.Response {
+	t.Helper()
+	data, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testTokenSecret)
+	if sessionID != "" {
+		req.Header.Set(mcpsrv.HeaderKeySessionID, sessionID)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+type commandTraceFixture struct {
+	t        *testing.T
+	msg      messenger.Messenger
+	logger   logging.Store
+	server   *httptest.Server
+	received chan *messenger.Message
+}
+
+func newCommandTraceFixture(t *testing.T) *commandTraceFixture {
+	t.Helper()
+
+	msg, err := messenger.Mock()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	store := &fakeStore{}
+	seedToken(store, []string{"read", "control", "write", "admin"})
+
+	logSvc, err := logserver.New(logcfg.Config{Target: "memory"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger := logSvc.Store()
+
+	received := make(chan *messenger.Message, 4)
+	sub, err := msg.Subscribe("plugin-esphome.basement-light-1.basement-light-1.command.light_turn_off", func(m *messenger.Message) {
+		received <- m
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := msg.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(NewWithLogger(msg, store, logger))
+
+	t.Cleanup(func() {
+		sub.Unsubscribe()
+		srv.Close()
+		msg.Close()
+	})
+
+	return &commandTraceFixture{
+		t:        t,
+		msg:      msg,
+		logger:   logger,
+		server:   srv,
+		received: received,
+	}
+}
+
+func (f *commandTraceFixture) waitForPublishedMessage() *messenger.Message {
+	f.t.Helper()
+	select {
+	case got := <-f.received:
+		return got
+	case <-time.After(2 * time.Second):
+		f.t.Fatal("timed out waiting for published command")
+		return nil
+	}
+}
+
+func (f *commandTraceFixture) waitForLog(traceID, kind string) logging.Event {
+	f.t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		events, err := f.logger.List(context.Background(), logging.ListRequest{
+			TraceID: traceID,
+			Kind:    kind,
+		})
+		if err != nil {
+			f.t.Fatal(err)
+		}
+		if len(events) > 0 {
+			return events[len(events)-1]
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	f.t.Fatalf("expected %s log on trace %s", kind, traceID)
+	return logging.Event{}
+}
+
 // ---------------------------------------------------------------------------
 // Auth middleware tests
 // ---------------------------------------------------------------------------
@@ -263,6 +374,192 @@ func TestAuth_BootstrapMode(t *testing.T) {
 	}
 }
 
+func TestMCP_ListLogs_ByTraceID(t *testing.T) {
+	msg, err := messenger.Mock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer msg.Close()
+
+	store := &fakeStore{}
+	seedToken(store, []string{"read", "control", "write", "admin"})
+
+	logSvc, err := logserver.New(logcfg.Config{Target: "memory"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger := logSvc.Store()
+	if err := logger.Append(context.Background(), logging.Event{
+		ID:      "evt-1",
+		TS:      time.Date(2026, 4, 9, 14, 0, 0, 0, time.UTC),
+		Source:  "sb-virtual",
+		Kind:    "fanout.published",
+		Level:   "info",
+		Message: "virtual fanout published",
+		Entity:  "plugin-automation.group.basement",
+		TraceID: "trace-basement-e2e-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := logger.Append(context.Background(), logging.Event{
+		ID:      "evt-2",
+		TS:      time.Date(2026, 4, 9, 14, 0, 1, 0, time.UTC),
+		Source:  "plugin-esphome",
+		Kind:    "command.received",
+		Level:   "info",
+		Message: "received command",
+		Entity:  "plugin-esphome.basement-light-1.basement-light-1",
+		TraceID: "trace-basement-e2e-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(NewWithLogger(msg, store, logger))
+	defer srv.Close()
+
+	initResp := mcpPost(t, srv.URL+"/mcp", map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2025-03-26",
+			"clientInfo": map[string]any{
+				"name":    "test-client",
+				"version": "1.0.0",
+			},
+		},
+	}, "")
+	defer initResp.Body.Close()
+	if initResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(initResp.Body)
+		t.Fatalf("initialize status: got %d body=%s", initResp.StatusCode, body)
+	}
+	sessionID := initResp.Header.Get(mcpsrv.HeaderKeySessionID)
+	if sessionID == "" {
+		t.Fatal("expected MCP session id header")
+	}
+
+	callResp := mcpPost(t, srv.URL+"/mcp", map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "list_logs",
+			"arguments": map[string]any{
+				"trace_id": "trace-basement-e2e-1",
+			},
+		},
+	}, sessionID)
+	defer callResp.Body.Close()
+	if callResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(callResp.Body)
+		t.Fatalf("tools/call status: got %d body=%s", callResp.StatusCode, body)
+	}
+
+	var rpcResp struct {
+		Result struct {
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+			IsError bool `json:"isError,omitempty"`
+		} `json:"result"`
+	}
+	decodeBody(t, callResp, &rpcResp)
+	if rpcResp.Result.IsError {
+		t.Fatal("expected successful MCP result")
+	}
+	if len(rpcResp.Result.Content) != 1 {
+		t.Fatalf("content len: got %d want 1", len(rpcResp.Result.Content))
+	}
+
+	var events []logging.Event
+	if err := json.Unmarshal([]byte(rpcResp.Result.Content[0].Text), &events); err != nil {
+		t.Fatalf("unmarshal MCP text result: %v text=%s", err, rpcResp.Result.Content[0].Text)
+	}
+	if len(events) != 2 {
+		t.Fatalf("events len: got %d want 2", len(events))
+	}
+	if events[0].ID != "evt-1" || events[1].ID != "evt-2" {
+		t.Fatalf("event ids: got %q %q", events[0].ID, events[1].ID)
+	}
+}
+
+func TestEntityCommandCreatesTraceAndPublishesHeaders(t *testing.T) {
+	msg, err := messenger.Mock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer msg.Close()
+
+	store := &fakeStore{}
+	seedToken(store, []string{"read", "control", "write", "admin"})
+
+	logSvc, err := logserver.New(logcfg.Config{Target: "memory"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger := logSvc.Store()
+
+	received := make(chan *messenger.Message, 1)
+	sub, err := msg.Subscribe("plugin-esphome.basement-light-1.basement-light-1.command.light_turn_off", func(m *messenger.Message) {
+		received <- m
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sub.Unsubscribe()
+	if err := msg.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(NewWithLogger(msg, store, logger))
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/entities/plugin-esphome/basement-light-1/basement-light-1/command/light_turn_off", bytes.NewReader([]byte(`{}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testTokenSecret)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d body=%s", resp.StatusCode, body)
+	}
+	traceID := resp.Header.Get("X-Sb-Trace-Id")
+	if traceID == "" {
+		t.Fatal("expected X-Sb-Trace-Id response header")
+	}
+
+	select {
+	case got := <-received:
+		if messenger.TraceID(got.Headers) != traceID {
+			t.Fatalf("message trace id: got %q want %q", messenger.TraceID(got.Headers), traceID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for published command")
+	}
+
+	events, err := logger.List(context.Background(), logging.ListRequest{
+		TraceID: traceID,
+		Kind:    "api.command.published",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events len: got %d want 1", len(events))
+	}
+	if events[0].Source != "sb-api" {
+		t.Fatalf("source: got %q want %q", events[0].Source, "sb-api")
+	}
+}
+
 func TestAuth_MissingToken(t *testing.T) {
 	msg, err := messenger.Mock()
 	if err != nil {
@@ -283,6 +580,110 @@ func TestAuth_MissingToken(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("missing token: got %d want %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+func TestRESTCommandTraceContract(t *testing.T) {
+	f := newCommandTraceFixture(t)
+
+	req, err := http.NewRequest(http.MethodPost, f.server.URL+"/entities/plugin-esphome/basement-light-1/basement-light-1/command/light_turn_off", bytes.NewReader([]byte(`{}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testTokenSecret)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d body=%s", resp.StatusCode, body)
+	}
+
+	traceID := resp.Header.Get("X-Sb-Trace-Id")
+	if traceID == "" {
+		t.Fatal("expected X-Sb-Trace-Id response header")
+	}
+
+	got := f.waitForPublishedMessage()
+	if messenger.TraceID(got.Headers) != traceID {
+		t.Fatalf("message trace id: got %q want %q", messenger.TraceID(got.Headers), traceID)
+	}
+
+	event := f.waitForLog(traceID, "api.command.published")
+	if event.Source != "sb-api" {
+		t.Fatalf("source: got %q want %q", event.Source, "sb-api")
+	}
+	if event.Data["subject"] != "plugin-esphome.basement-light-1.basement-light-1.command.light_turn_off" {
+		t.Fatalf("subject: got %v", event.Data["subject"])
+	}
+}
+
+func TestMCPCommandTraceContract(t *testing.T) {
+	f := newCommandTraceFixture(t)
+
+	initResp := mcpPost(t, f.server.URL+"/mcp", map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2025-03-26",
+			"clientInfo": map[string]any{
+				"name":    "test-client",
+				"version": "1.0.0",
+			},
+		},
+	}, "")
+	defer initResp.Body.Close()
+	if initResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(initResp.Body)
+		t.Fatalf("initialize status: got %d body=%s", initResp.StatusCode, body)
+	}
+	sessionID := initResp.Header.Get(mcpsrv.HeaderKeySessionID)
+	if sessionID == "" {
+		t.Fatal("expected MCP session id header")
+	}
+
+	callResp := mcpPost(t, f.server.URL+"/mcp", map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "send_command",
+			"arguments": map[string]any{
+				"plugin":  "plugin-esphome",
+				"device":  "basement-light-1",
+				"entity":  "basement-light-1",
+				"action":  "light_turn_off",
+				"payload": `{}`,
+			},
+		},
+	}, sessionID)
+	defer callResp.Body.Close()
+	if callResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(callResp.Body)
+		t.Fatalf("tools/call status: got %d body=%s", callResp.StatusCode, body)
+	}
+
+	traceID := callResp.Header.Get("X-Sb-Trace-Id")
+	if traceID == "" {
+		t.Fatal("expected X-Sb-Trace-Id response header")
+	}
+
+	got := f.waitForPublishedMessage()
+	if messenger.TraceID(got.Headers) != traceID {
+		t.Fatalf("message trace id: got %q want %q", messenger.TraceID(got.Headers), traceID)
+	}
+
+	event := f.waitForLog(traceID, "mcp.command.published")
+	if event.Source != "sb-api" {
+		t.Fatalf("source: got %q want %q", event.Source, "sb-api")
+	}
+	if event.Data["subject"] != "plugin-esphome.basement-light-1.basement-light-1.command.light_turn_off" {
+		t.Fatalf("subject: got %v", event.Data["subject"])
 	}
 }
 
@@ -1285,6 +1686,74 @@ func TestScriptsRoutes_SaveDefinition(t *testing.T) {
 	}
 }
 
+func TestScriptsRoutes_SaveDefinitionAutomationType(t *testing.T) {
+	msg, err := messenger.Mock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer msg.Close()
+
+	store := &fakeStore{}
+	seedToken(store, []string{"read", "write", "control", "admin"})
+
+	srv := httptest.NewServer(New(msg, store))
+	defer srv.Close()
+
+	luaSource := "Automation(\"PartyTime\", function() return true end)"
+	req, err := http.NewRequest(http.MethodPut, srv.URL+"/scripts/PartyTime?type=automation", bytes.NewReader([]byte(luaSource)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "text/plain")
+	resp, err := authDo(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status: got %d want %d", resp.StatusCode, http.StatusNoContent)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(store.savedBody, &got); err != nil {
+		t.Fatalf("unmarshal saved body: %v", err)
+	}
+	if got["type"] != "automation" {
+		t.Fatalf("saved type: got %v want automation", got["type"])
+	}
+}
+
+func TestScriptsRoutes_SaveDefinitionRejectsInvalidType(t *testing.T) {
+	msg, err := messenger.Mock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer msg.Close()
+
+	store := &fakeStore{}
+	seedToken(store, []string{"read", "write", "control", "admin"})
+
+	srv := httptest.NewServer(New(msg, store))
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodPut, srv.URL+"/scripts/PartyTime?type=timer", bytes.NewReader([]byte("print('hi')")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "text/plain")
+	resp, err := authDo(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status: got %d want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+	if store.savedKey != "" || store.savedBody != nil {
+		t.Fatalf("expected no save on invalid type, got key=%q body=%s", store.savedKey, string(store.savedBody))
+	}
+}
+
 func TestScriptsRoutes_Start(t *testing.T) {
 	msg, err := messenger.Mock()
 	if err != nil {
@@ -1392,8 +1861,8 @@ func TestScriptsRoutes_ListAndInstances(t *testing.T) {
 	store := &fakeStore{
 		searchResultsByPattern: map[string][]storage.Entry{
 			"sb-script.scripts.>": {
-				{Key: "sb-script.scripts.PartyTime", Data: json.RawMessage(`{"name":"PartyTime","source":"Automation(\"PartyTime\", ...)"} `)},
-				{Key: "sb-script.scripts.WelcomeHome", Data: json.RawMessage(`{"name":"WelcomeHome","source":"Automation(\"WelcomeHome\", ...)"}`)},
+				{Key: "sb-script.scripts.PartyTime", Data: json.RawMessage(`{"type":"automation","name":"PartyTime","source":"Automation(\"PartyTime\", ...)"}`)},
+				{Key: "sb-script.scripts.WelcomeHome", Data: json.RawMessage(`{"type":"script","name":"WelcomeHome","source":"Automation(\"WelcomeHome\", ...)"}`)},
 			},
 			"sb-script.instances.>": {
 				{Key: "sb-script.instances.a1b2", Data: mustJSON(t, map[string]any{
@@ -1433,6 +1902,9 @@ func TestScriptsRoutes_ListAndInstances(t *testing.T) {
 	if scripts[0]["name"] != "PartyTime" || scripts[1]["name"] != "WelcomeHome" {
 		t.Fatalf("unexpected scripts order/body: %+v", scripts)
 	}
+	if scripts[0]["type"] != "automation" || scripts[1]["type"] != "script" {
+		t.Fatalf("unexpected script types: %+v", scripts)
+	}
 	if scripts[0]["running"] != true {
 		t.Fatalf("expected PartyTime running: %+v", scripts[0])
 	}
@@ -1469,7 +1941,7 @@ func TestScriptsRoutes_GetOne(t *testing.T) {
 	store := &fakeStore{
 		searchResultsByPattern: map[string][]storage.Entry{
 			"sb-script.scripts.>": {
-				{Key: "sb-script.scripts.PartyTime", Data: json.RawMessage(`{"name":"PartyTime","source":"Automation(\"PartyTime\", ...)"}`)},
+				{Key: "sb-script.scripts.PartyTime", Data: json.RawMessage(`{"type":"automation","name":"PartyTime","source":"Automation(\"PartyTime\", ...)"}`)},
 			},
 			"sb-script.instances.>": {
 				{Key: "sb-script.instances.a1b2", Data: json.RawMessage(`{"name":"PartyTime","queryRef":"group_main_lb","hash":"a1b2","status":"running","targets":{"kind":"query_ref","queryRef":"group_main_lb"}}`)},
@@ -1490,7 +1962,7 @@ func TestScriptsRoutes_GetOne(t *testing.T) {
 	}
 	var script map[string]any
 	decodeBody(t, resp, &script)
-	if script["name"] != "PartyTime" || script["running"] != true {
+	if script["name"] != "PartyTime" || script["running"] != true || script["type"] != "automation" {
 		t.Fatalf("unexpected script response: %+v", script)
 	}
 

@@ -6,7 +6,9 @@ import (
 	"reflect"
 
 	"github.com/danielgtaylor/huma/v2"
+	apitrc "github.com/slidebolt/sb-api/internal/trace"
 	domain "github.com/slidebolt/sb-domain"
+	logging "github.com/slidebolt/sb-logging-sdk"
 	messenger "github.com/slidebolt/sb-messenger-sdk"
 	storage "github.com/slidebolt/sb-storage-sdk"
 )
@@ -67,7 +69,7 @@ type CommandInput struct {
 	Body     json.RawMessage `doc:"Command payload"`
 }
 
-func RegisterEntities(api huma.API, store storage.Storage, msg messenger.Messenger) {
+func RegisterEntities(api huma.API, store storage.Storage, msg messenger.Messenger, logger logging.Store) {
 	huma.Register(api, huma.Operation{
 		Method:      "GET",
 		Path:        "/entities",
@@ -167,6 +169,7 @@ func RegisterEntities(api huma.API, store storage.Storage, msg messenger.Messeng
 		Description: "Publishes a command to the entity via NATS.",
 		Tags:        []string{"commands"},
 	}, func(ctx context.Context, input *CommandInput) (*struct{}, error) {
+		ctx, traceID := apitrc.Ensure(ctx)
 		subject := input.Plugin + "." + input.DeviceID + "." + input.EntityID + ".command." + input.Action
 
 		// If the action is registered in the domain, validate the payload
@@ -181,9 +184,17 @@ func RegisterEntities(api huma.API, store storage.Storage, msg messenger.Messeng
 			}
 		}
 
-		if err := msg.Publish(subject, input.Body); err != nil {
+		headers := apitrc.MessageHeaders(traceID, "sb-api", input.Plugin+"."+input.DeviceID+"."+input.EntityID, input.Action)
+		if err := msg.PublishWithHeaders(subject, input.Body, headers); err != nil {
 			return nil, huma.Error500InternalServerError("publish failed", err)
 		}
+		apitrc.AppendLog(ctx, logger, "sb-api", "api.command.published", "info", "API published entity command", traceID, map[string]any{
+			"subject": subject,
+			"plugin":  input.Plugin,
+			"device":  input.DeviceID,
+			"entity":  input.EntityID,
+			"action":  input.Action,
+		})
 		return nil, nil
 	})
 }

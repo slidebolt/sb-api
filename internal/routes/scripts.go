@@ -9,11 +9,18 @@ import (
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	apitrc "github.com/slidebolt/sb-api/internal/trace"
+	logging "github.com/slidebolt/sb-logging-sdk"
 	messenger "github.com/slidebolt/sb-messenger-sdk"
 	storage "github.com/slidebolt/sb-storage-sdk"
 )
 
 const scriptRequestTimeout = 5 * time.Second
+
+const (
+	scriptDefinitionTypeScript     = "script"
+	scriptDefinitionTypeAutomation = "automation"
+)
 
 type scriptAPIResponse struct {
 	OK    bool   `json:"ok"`
@@ -23,6 +30,7 @@ type scriptAPIResponse struct {
 
 type ScriptDefinitionInput struct {
 	Name    string `path:"name"`
+	Type    string `query:"type" doc:"Optional definition type. Use script for definitions that only run when started explicitly, or automation for definitions that should auto-start when sb-script boots."`
 	RawBody []byte `contentType:"text/plain"`
 }
 
@@ -45,6 +53,7 @@ type ScriptStartOutput struct {
 }
 
 type scriptDefinition struct {
+	Type   string `json:"type,omitempty" doc:"Definition type. script runs only when started explicitly. automation is auto-started by sb-script on service startup."`
 	Name   string `json:"name"`
 	Source string `json:"source"`
 }
@@ -64,22 +73,23 @@ type scriptTargets struct {
 }
 
 type ScriptInstance struct {
-	Name            string        `json:"name"`
-	QueryRef        string        `json:"queryRef,omitempty"`
-	Hash            string        `json:"hash"`
-	Status          string        `json:"status,omitempty"`
-	Trigger         scriptTrigger `json:"trigger,omitempty"`
-	Targets         scriptTargets `json:"targets,omitempty"`
-	ResolvedTargets []string      `json:"resolvedTargets,omitempty"`
-	StartedAt       *time.Time    `json:"startedAt,omitempty"`
-	LastFiredAt     *time.Time    `json:"lastFiredAt,omitempty"`
-	NextFireAt      *time.Time    `json:"nextFireAt,omitempty"`
-	LastError       string        `json:"lastError,omitempty"`
-	FireCount       int           `json:"fireCount,omitempty"`
+	Name            string         `json:"name"`
+	QueryRef        string         `json:"queryRef,omitempty"`
+	Hash            string         `json:"hash"`
+	Status          string         `json:"status,omitempty"`
+	Trigger         scriptTrigger  `json:"trigger,omitempty"`
+	Targets         scriptTargets  `json:"targets,omitempty"`
+	ResolvedTargets []string       `json:"resolvedTargets,omitempty"`
+	StartedAt       *time.Time     `json:"startedAt,omitempty"`
+	LastFiredAt     *time.Time     `json:"lastFiredAt,omitempty"`
+	NextFireAt      *time.Time     `json:"nextFireAt,omitempty"`
+	LastError       string         `json:"lastError,omitempty"`
+	FireCount       int            `json:"fireCount,omitempty"`
 	State           map[string]any `json:"state,omitempty"`
 }
 
 type Script struct {
+	Type      string           `json:"type" doc:"Definition type. script runs only when started explicitly. automation is auto-started by sb-script on service startup."`
 	Name      string           `json:"name"`
 	Source    string           `json:"source"`
 	Running   bool             `json:"running"`
@@ -98,13 +108,13 @@ type ScriptInstancesOutput struct {
 	Body []ScriptInstance
 }
 
-func RegisterScripts(api huma.API, store storage.Storage, msg messenger.Messenger) {
+func RegisterScripts(api huma.API, store storage.Storage, msg messenger.Messenger, logger logging.Store) {
 	// GET /scripts — list all scripts with their instances
 	huma.Register(api, huma.Operation{
 		Method:      "GET",
 		Path:        "/scripts",
 		Summary:     "List scripts",
-		Description: "Returns saved script definitions with any running instances.",
+		Description: "Returns saved Lua definitions with their type and any running instances. Type script means manual start only. Type automation means sb-script auto-starts it on service startup.",
 		Tags:        []string{"scripts"},
 	}, func(ctx context.Context, _ *struct{}) (*ScriptsListOutput, error) {
 		scripts, err := loadScripts(store)
@@ -119,7 +129,7 @@ func RegisterScripts(api huma.API, store storage.Storage, msg messenger.Messenge
 		Method:      "GET",
 		Path:        "/scripts/{name}",
 		Summary:     "Get a script",
-		Description: "Returns a saved script definition and its running instances.",
+		Description: "Returns one saved Lua definition with its type and any running instances. Type script means manual start only. Type automation means sb-script auto-starts it on service startup.",
 		Tags:        []string{"scripts"},
 	}, func(ctx context.Context, input *struct {
 		Name string `path:"name"`
@@ -141,11 +151,15 @@ func RegisterScripts(api huma.API, store storage.Storage, msg messenger.Messenge
 		Method:      "PUT",
 		Path:        "/scripts/{name}",
 		Summary:     "Save or update a script definition",
-		Description: "Stores a Lua script definition in storage under the canonical sb-script.scripts.* keyspace.",
+		Description: "Stores a Lua definition under the canonical sb-script.scripts.* keyspace. Pass query parameter type=script for manual-start definitions or type=automation for definitions that should auto-start when sb-script boots. The request body remains plain-text Lua source.",
 		Tags:        []string{"scripts"},
 	}, func(ctx context.Context, input *ScriptDefinitionInput) (*struct{}, error) {
+		defType, err := normalizeScriptDefinitionType(input.Type)
+		if err != nil {
+			return nil, huma.Error400BadRequest(err.Error())
+		}
 		body, err := json.Marshal(map[string]string{
-			"type":     "script",
+			"type":     defType,
 			"language": "lua",
 			"name":     input.Name,
 			"source":   string(input.RawBody),
@@ -197,14 +211,20 @@ func RegisterScripts(api huma.API, store storage.Storage, msg messenger.Messenge
 		Description: "Starts a named script in sb-script via NATS request/reply.",
 		Tags:        []string{"scripts"},
 	}, func(ctx context.Context, input *ScriptInstanceStartInput) (*ScriptStartOutput, error) {
+		ctx, traceID := apitrc.Ensure(ctx)
 		req := map[string]any{
 			"name":     input.Name,
 			"queryRef": input.Body.QueryRef,
 		}
 		var resp scriptAPIResponse
-		if err := requestScriptAPI(msg, "script.start", req, &resp); err != nil {
+		if err := requestScriptAPI(ctx, logger, msg, "script.start", req, &resp); err != nil {
 			return nil, err
 		}
+		apitrc.AppendLog(ctx, logger, "sb-api", "api.script.started", "info", "API started script", traceID, map[string]any{
+			"name":     input.Name,
+			"queryRef": input.Body.QueryRef,
+			"hash":     resp.Hash,
+		})
 		out := &ScriptStartOutput{}
 		out.Body.Hash = resp.Hash
 		return out, nil
@@ -218,24 +238,35 @@ func RegisterScripts(api huma.API, store storage.Storage, msg messenger.Messenge
 		Description: "Stops a specific script instance in sb-script via NATS request/reply.",
 		Tags:        []string{"scripts"},
 	}, func(ctx context.Context, input *ScriptInstanceStopInput) (*struct{}, error) {
+		ctx, traceID := apitrc.Ensure(ctx)
 		req := map[string]any{
 			"name": input.Name,
 			"hash": input.Hash,
 		}
-		if err := requestScriptAPI(msg, "script.stop", req, nil); err != nil {
+		if err := requestScriptAPI(ctx, logger, msg, "script.stop", req, nil); err != nil {
 			return nil, err
 		}
+		apitrc.AppendLog(ctx, logger, "sb-api", "api.script.stopped", "info", "API stopped script", traceID, map[string]any{
+			"name": input.Name,
+			"hash": input.Hash,
+		})
 		return nil, nil
 	})
 }
 
-func requestScriptAPI(msg messenger.Messenger, subject string, body any, dest *scriptAPIResponse) error {
+func requestScriptAPI(ctx context.Context, logger logging.Store, msg messenger.Messenger, subject string, body any, dest *scriptAPIResponse) error {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return huma.Error500InternalServerError("marshal failed", err)
 	}
+	traceID := apitrc.FromContext(ctx)
 
-	respMsg, err := msg.Request(subject, data, scriptRequestTimeout)
+	headers := apitrc.MessageHeaders(traceID, "sb-api", subject, subject)
+	apitrc.AppendLog(ctx, logger, "sb-api", "api.script.request", "info", "API requested script action", traceID, map[string]any{
+		"subject": subject,
+		"body":    body,
+	})
+	respMsg, err := msg.RequestWithHeaders(subject, data, headers, scriptRequestTimeout)
 	if err != nil {
 		return huma.Error500InternalServerError("script request failed", err)
 	}
@@ -272,7 +303,14 @@ func loadScripts(store storage.Storage) ([]Script, error) {
 		if err := json.Unmarshal(entry.Data, &def); err != nil {
 			continue
 		}
-		byName[def.Name] = &Script{Name: def.Name, Source: def.Source}
+		if def.Name == "" {
+			continue
+		}
+		byName[def.Name] = &Script{
+			Type:   displayScriptDefinitionType(def.Type),
+			Name:   def.Name,
+			Source: def.Source,
+		}
 	}
 
 	for _, entry := range instEntries {
@@ -302,6 +340,24 @@ func loadScripts(store storage.Storage) ([]Script, error) {
 		out = append(out, *s)
 	}
 	return out, nil
+}
+
+func normalizeScriptDefinitionType(raw string) (string, error) {
+	switch raw {
+	case "", scriptDefinitionTypeScript:
+		return scriptDefinitionTypeScript, nil
+	case scriptDefinitionTypeAutomation:
+		return scriptDefinitionTypeAutomation, nil
+	default:
+		return "", fmt.Errorf("invalid script type %q: must be %q or %q", raw, scriptDefinitionTypeScript, scriptDefinitionTypeAutomation)
+	}
+}
+
+func displayScriptDefinitionType(raw string) string {
+	if raw == "" {
+		return scriptDefinitionTypeScript
+	}
+	return raw
 }
 
 func loadScriptInstances(store storage.Storage) ([]ScriptInstance, error) {
