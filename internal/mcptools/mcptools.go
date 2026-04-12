@@ -430,23 +430,23 @@ Queries are named, reusable search definitions stored under sb-query.queries.* a
 	})
 
 	s.AddTool(mcp.NewTool("stop_script",
-		mcp.WithDescription("Stop a specific script instance"),
+		mcp.WithDescription("Stop a script instance identified by name and optional queryRef"),
 		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(true),
 		mcp.WithIdempotentHintAnnotation(true),
 		mcp.WithOpenWorldHintAnnotation(true),
 		mcp.WithString("name", mcp.Required(), mcp.Description("Script name")),
-		mcp.WithString("hash", mcp.Required(), mcp.Description("Instance hash")),
+		mcp.WithString("queryRef", mcp.Description("Optional query reference identifying the targeted instance")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		ctx, traceID := apitrc.Ensure(ctx)
 		name := req.GetString("name", "")
-		hash := req.GetString("hash", "")
-		if name == "" || hash == "" {
-			return mcp.NewToolResultError("name and hash are required"), nil
+		queryRef := req.GetString("queryRef", "")
+		if name == "" {
+			return mcp.NewToolResultError("name is required"), nil
 		}
-		data, _ := json.Marshal(map[string]string{"name": name, "hash": hash})
+		data, _ := json.Marshal(map[string]string{"name": name, "queryRef": queryRef})
 		headers := apitrc.MessageHeaders(traceID, "sb-api", "script.stop", "script.stop")
-		apitrc.AppendLog(ctx, logs, "sb-api", "mcp.script.request", "info", "MCP requested script stop", traceID, map[string]any{"name": name, "hash": hash})
+		apitrc.AppendLog(ctx, logs, "sb-api", "mcp.script.request", "info", "MCP requested script stop", traceID, map[string]any{"name": name, "queryRef": queryRef})
 		respMsg, err := msg.RequestWithHeaders("script.stop", data, headers, 5*time.Second)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("script stop request failed: %v", err)), nil
@@ -461,8 +461,11 @@ Queries are named, reusable search definitions stored under sb-query.queries.* a
 		if !resp.OK {
 			return mcp.NewToolResultError(fmt.Sprintf("script engine error: %s", resp.Error)), nil
 		}
-		apitrc.AppendLog(ctx, logs, "sb-api", "mcp.script.stopped", "info", "MCP stopped script", traceID, map[string]any{"name": name, "hash": hash})
-		return mcp.NewToolResultText(fmt.Sprintf("script %s instance %s stopped", name, hash)), nil
+		apitrc.AppendLog(ctx, logs, "sb-api", "mcp.script.stopped", "info", "MCP stopped script", traceID, map[string]any{"name": name, "queryRef": queryRef})
+		if queryRef == "" {
+			return mcp.NewToolResultText(fmt.Sprintf("script %s stopped", name)), nil
+		}
+		return mcp.NewToolResultText(fmt.Sprintf("script %s for queryRef %s stopped", name, queryRef)), nil
 	})
 
 	s.AddTool(mcp.NewTool("list_queries",

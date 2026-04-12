@@ -43,7 +43,9 @@ type ScriptInstanceStartInput struct {
 
 type ScriptInstanceStopInput struct {
 	Name string `path:"name"`
-	Hash string `path:"hash"`
+	Body struct {
+		QueryRef string `json:"queryRef,omitempty"`
+	}
 }
 
 type ScriptStartOutput struct {
@@ -230,25 +232,25 @@ func RegisterScripts(api huma.API, store storage.Storage, msg messenger.Messenge
 		return out, nil
 	})
 
-	// DELETE /scripts/{name}/instances/{hash} — stop a specific instance
+	// POST /scripts/{name}/stop — stop a specific script instance by queryRef
 	huma.Register(api, huma.Operation{
-		Method:      "DELETE",
-		Path:        "/scripts/{name}/instances/{hash}",
+		Method:      "POST",
+		Path:        "/scripts/{name}/stop",
 		Summary:     "Stop a script instance",
-		Description: "Stops a specific script instance in sb-script via NATS request/reply.",
+		Description: "Stops a named script instance in sb-script via NATS request/reply. queryRef identifies the targeted instance; omit it for the default non-targeted instance.",
 		Tags:        []string{"scripts"},
 	}, func(ctx context.Context, input *ScriptInstanceStopInput) (*struct{}, error) {
 		ctx, traceID := apitrc.Ensure(ctx)
 		req := map[string]any{
-			"name": input.Name,
-			"hash": input.Hash,
+			"name":     input.Name,
+			"queryRef": input.Body.QueryRef,
 		}
 		if err := requestScriptAPI(ctx, logger, msg, "script.stop", req, nil); err != nil {
 			return nil, err
 		}
 		apitrc.AppendLog(ctx, logger, "sb-api", "api.script.stopped", "info", "API stopped script", traceID, map[string]any{
-			"name": input.Name,
-			"hash": input.Hash,
+			"name":     input.Name,
+			"queryRef": input.Body.QueryRef,
 		})
 		return nil, nil
 	})

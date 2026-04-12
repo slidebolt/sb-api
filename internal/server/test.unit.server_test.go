@@ -1824,10 +1824,11 @@ func TestScriptsRoutes_Stop(t *testing.T) {
 	srv := httptest.NewServer(New(msg, store))
 	defer srv.Close()
 
-	req, err := http.NewRequest(http.MethodDelete, srv.URL+"/scripts/PartyTime/instances/abc123", nil)
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/scripts/PartyTime/stop", strings.NewReader(`{"queryRef":"room_main"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
+	req.Header.Set("Content-Type", "application/json")
 	resp, err := authDo(req)
 	if err != nil {
 		t.Fatal(err)
@@ -1839,7 +1840,7 @@ func TestScriptsRoutes_Stop(t *testing.T) {
 
 	select {
 	case got := <-reqCh:
-		if got["name"] != "PartyTime" || got["hash"] != "abc123" {
+		if got["name"] != "PartyTime" || got["queryRef"] != "room_main" {
 			t.Fatalf("unexpected stop request: %+v", got)
 		}
 	case <-time.After(2 * time.Second):
