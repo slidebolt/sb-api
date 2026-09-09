@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 
-	domain "github.com/slidebolt/sb-domain"
 	"github.com/danielgtaylor/huma/v2"
+	domain "github.com/slidebolt/sb-domain"
 	storage "github.com/slidebolt/sb-storage-sdk"
 )
 
@@ -139,7 +139,17 @@ func RegisterDevices(api huma.API, store storage.Storage) {
 		Tags:        []string{"devices"},
 	}, func(ctx context.Context, input *DeviceInput) (*struct{}, error) {
 		key := DeviceKey{Plugin: input.Plugin, ID: input.ID}
-		if err := store.SetProfile(key, input.Body); err != nil {
+		merged, empty, err := mergeProfilePatch(store, key, input.Body)
+		if err != nil {
+			return nil, huma.Error400BadRequest("invalid profile patch", err)
+		}
+		if empty {
+			if err := store.DeleteFile(storage.Profile, key); err != nil {
+				return nil, huma.Error500InternalServerError("delete profile failed", err)
+			}
+			return nil, nil
+		}
+		if err := store.SetProfile(key, merged); err != nil {
 			return nil, huma.Error500InternalServerError("set profile failed", err)
 		}
 		return nil, nil

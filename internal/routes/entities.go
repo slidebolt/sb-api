@@ -156,7 +156,17 @@ func RegisterEntities(api huma.API, store storage.Storage, msg messenger.Messeng
 		Tags:        []string{"entities"},
 	}, func(ctx context.Context, input *EntityInput) (*struct{}, error) {
 		key := EntityKey{Plugin: input.Plugin, DeviceID: input.DeviceID, EntityID: input.EntityID}
-		if err := store.SetProfile(key, input.Body); err != nil {
+		merged, empty, err := mergeProfilePatch(store, key, input.Body)
+		if err != nil {
+			return nil, huma.Error400BadRequest("invalid profile patch", err)
+		}
+		if empty {
+			if err := store.DeleteFile(storage.Profile, key); err != nil {
+				return nil, huma.Error500InternalServerError("delete profile failed", err)
+			}
+			return nil, nil
+		}
+		if err := store.SetProfile(key, merged); err != nil {
 			return nil, huma.Error500InternalServerError("set profile failed", err)
 		}
 		return nil, nil
@@ -171,6 +181,15 @@ func RegisterEntities(api huma.API, store storage.Storage, msg messenger.Messeng
 	}, func(ctx context.Context, input *CommandInput) (*struct{}, error) {
 		ctx, traceID := apitrc.Ensure(ctx)
 		subject := input.Plugin + "." + input.DeviceID + "." + input.EntityID + ".command." + input.Action
+		target := input.Plugin + "." + input.DeviceID + "." + input.EntityID
+		apitrc.AppendLog(ctx, logger, "sb-api", "api.command.request.received", "info", "API received entity command", traceID, map[string]any{
+			"subject": subject,
+			"plugin":  input.Plugin,
+			"device":  input.DeviceID,
+			"entity":  input.EntityID,
+			"target":  target,
+			"action":  input.Action,
+		})
 
 		// If the action is registered in the domain, validate the payload
 		// against the registered type before publishing. This catches type
@@ -184,7 +203,7 @@ func RegisterEntities(api huma.API, store storage.Storage, msg messenger.Messeng
 			}
 		}
 
-		headers := apitrc.MessageHeaders(traceID, "sb-api", input.Plugin+"."+input.DeviceID+"."+input.EntityID, input.Action)
+		headers := apitrc.MessageHeaders(traceID, "sb-api", target, input.Action)
 		if err := msg.PublishWithHeaders(subject, input.Body, headers); err != nil {
 			return nil, huma.Error500InternalServerError("publish failed", err)
 		}

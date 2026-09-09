@@ -36,11 +36,13 @@ type fakeStore struct {
 	profileKey     string
 	profileBody    json.RawMessage
 	deletedKey     string
+	deletedTarget  storage.StorageTarget
 
 	searchResult           []storage.Entry
 	searchResultsByPattern map[string][]storage.Entry
 	queryResult            []storage.Entry
 	getResult              json.RawMessage
+	readFiles              map[storage.StorageTarget]map[string]json.RawMessage
 }
 
 func (f *fakeStore) Save(v storage.Keyed) error {
@@ -87,10 +89,17 @@ func (f *fakeStore) WriteFile(target storage.StorageTarget, key storage.Keyed, d
 }
 
 func (f *fakeStore) ReadFile(target storage.StorageTarget, key storage.Keyed) (json.RawMessage, error) {
+	if byKey, ok := f.readFiles[target]; ok {
+		if data, ok := byKey[key.Key()]; ok {
+			return data, nil
+		}
+	}
 	return nil, nil
 }
 
 func (f *fakeStore) DeleteFile(target storage.StorageTarget, key storage.Keyed) error {
+	f.deletedTarget = target
+	f.deletedKey = key.Key()
 	return nil
 }
 
@@ -1208,9 +1217,173 @@ func TestDevicesRoutes_SetProfile(t *testing.T) {
 	}
 }
 
+func TestDevicesRoutes_ProfilePatchMergesAndDeletesFields(t *testing.T) {
+	msg, err := messenger.Mock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer msg.Close()
+
+	store := &fakeStore{
+		readFiles: map[storage.StorageTarget]map[string]json.RawMessage{
+			storage.Profile: {
+				"plugin.dev2": json.RawMessage(`{
+					"labels":{"Area":["Basement"],"PluginHomeassistant":["true"]},
+					"meta":{"Display":{"priority":5}},
+					"profile":{"name":"Basement Device 2","id":"basement-device-2"}
+				}`),
+			},
+		},
+	}
+	seedToken(store, []string{"read", "write", "control", "admin"})
+	srv := httptest.NewServer(New(msg, store))
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodPatch, srv.URL+"/devices/plugin/dev2/profile", bytes.NewReader([]byte(`{
+		"labels":{"PluginHomeassistant":null,"Technology":["ESPHome"]},
+		"profile":{"name":null}
+	}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := authDo(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status: got %d want %d", resp.StatusCode, http.StatusNoContent)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(store.profileBody, &got); err != nil {
+		t.Fatalf("unmarshal profile body: %v", err)
+	}
+	labels := got["labels"].(map[string]any)
+	if _, ok := labels["PluginHomeassistant"]; ok {
+		t.Fatalf("PluginHomeassistant label was not deleted: %+v", labels)
+	}
+	if labels["Area"] == nil || labels["Technology"] == nil {
+		t.Fatalf("labels were not merged: %+v", labels)
+	}
+	if got["meta"] == nil {
+		t.Fatalf("meta was not preserved: %+v", got)
+	}
+	prof := got["profile"].(map[string]any)
+	if _, ok := prof["name"]; ok {
+		t.Fatalf("profile.name was not deleted: %+v", prof)
+	}
+	if prof["id"] != "basement-device-2" {
+		t.Fatalf("profile.id was not preserved: %+v", prof)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Entity routes
 // ---------------------------------------------------------------------------
+
+func TestEntitiesRoutes_ProfilePatchPreservesHomeAssistantProfile(t *testing.T) {
+	msg, err := messenger.Mock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer msg.Close()
+
+	store := &fakeStore{
+		readFiles: map[storage.StorageTarget]map[string]json.RawMessage{
+			storage.Profile: {
+				"plugin-zigbee.0x00124b0000000001.default-light": json.RawMessage(`{
+					"labels":{
+						"Area":["Main Floor"],
+						"Room":["Main Room"],
+						"Fixture":["Light Bar"],
+						"DeviceClass":["Light"],
+						"Group":["Main Light Bars"]
+					},
+					"profile":{"name":"Main Light Bar 01 Light","id":"main-light-bar-01-light"}
+				}`),
+			},
+		},
+	}
+	seedToken(store, []string{"read", "write", "control", "admin"})
+	srv := httptest.NewServer(New(msg, store))
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodPatch, srv.URL+"/entities/plugin-zigbee/0x00124b0000000001/default-light/profile", bytes.NewReader([]byte(`{
+		"labels":{"PluginHomeassistant":["true"],"PluginAutomation":["UpstairsArea"]}
+	}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := authDo(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status: got %d want %d", resp.StatusCode, http.StatusNoContent)
+	}
+	if store.profileKey != "plugin-zigbee.0x00124b0000000001.default-light" {
+		t.Fatalf("profile key: got %q", store.profileKey)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(store.profileBody, &got); err != nil {
+		t.Fatalf("unmarshal profile body: %v", err)
+	}
+	labels := got["labels"].(map[string]any)
+	if labels["PluginHomeassistant"] == nil || labels["PluginAutomation"] == nil {
+		t.Fatalf("new labels missing: %+v", labels)
+	}
+	if labels["Room"] == nil || labels["Group"] == nil {
+		t.Fatalf("existing labels not preserved: %+v", labels)
+	}
+	prof := got["profile"].(map[string]any)
+	if prof["name"] != "Main Light Bar 01 Light" || prof["id"] != "main-light-bar-01-light" {
+		t.Fatalf("HA profile was not preserved: %+v", prof)
+	}
+}
+
+func TestEntitiesRoutes_ProfilePatchDeletesEmptySidecar(t *testing.T) {
+	msg, err := messenger.Mock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer msg.Close()
+
+	store := &fakeStore{
+		readFiles: map[storage.StorageTarget]map[string]json.RawMessage{
+			storage.Profile: {
+				"plugin.dev.entity": json.RawMessage(`{"profile":{"name":"Lamp","id":"lamp"}}`),
+			},
+		},
+	}
+	seedToken(store, []string{"read", "write", "control", "admin"})
+	srv := httptest.NewServer(New(msg, store))
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodPatch, srv.URL+"/entities/plugin/dev/entity/profile", bytes.NewReader([]byte(`{"profile":null}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := authDo(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status: got %d want %d", resp.StatusCode, http.StatusNoContent)
+	}
+	if store.deletedTarget != storage.Profile || store.deletedKey != "plugin.dev.entity" {
+		t.Fatalf("profile sidecar not deleted: target=%s key=%q", store.deletedTarget, store.deletedKey)
+	}
+	if len(store.profileBody) != 0 {
+		t.Fatalf("profile should not be set after empty merge: %s", store.profileBody)
+	}
+}
 
 func TestEntitiesCommandAndQueryRoutes(t *testing.T) {
 	msg, err := messenger.Mock()
