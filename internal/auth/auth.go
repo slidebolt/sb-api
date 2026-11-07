@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -107,6 +108,11 @@ func RequiredScope(method, path string) Scope {
 	if strings.HasPrefix(path, "/tokens") {
 		return ScopeAdmin
 	}
+	// MCP sends every call as a POST, reads included. Connecting needs read;
+	// each tool then checks its own scope (see mcptools).
+	if path == "/mcp" || strings.HasPrefix(path, "/mcp/") {
+		return ScopeRead
+	}
 	if method == http.MethodGet {
 		return ScopeRead
 	}
@@ -189,7 +195,21 @@ func Middleware(store storage.Storage) func(http.Handler) http.Handler {
 				return
 			}
 
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(w, r.WithContext(WithScopes(r.Context(), tok.Scopes)))
 		})
 	}
+}
+
+type scopesKey struct{}
+
+// WithScopes records the scopes of the token that made a request.
+func WithScopes(ctx context.Context, scopes []string) context.Context {
+	return context.WithValue(ctx, scopesKey{}, scopes)
+}
+
+// ScopesFromContext returns the scopes recorded by WithScopes, and whether
+// there were any. Requests through Middleware always have them.
+func ScopesFromContext(ctx context.Context) ([]string, bool) {
+	scopes, ok := ctx.Value(scopesKey{}).([]string)
+	return scopes, ok
 }

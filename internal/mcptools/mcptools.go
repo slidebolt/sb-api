@@ -36,6 +36,8 @@ func New(store storage.Storage, msg messenger.Messenger, logs logging.Store) *se
 		"SlideBolt",
 		"0.1.0",
 		server.WithToolCapabilities(true),
+		server.WithToolHandlerMiddleware(requireToolScope),
+		server.WithToolFilter(visibleTools),
 		server.WithInstructions(`SlideBolt is a home-automation runtime for managing IoT devices, entities, and Lua automation scripts.
 
 The user invokes SlideBolt tools by prefixing their request with "sb". Examples:

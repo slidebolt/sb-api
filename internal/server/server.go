@@ -54,6 +54,9 @@ func NewWithLogger(msg messenger.Messenger, store storage.Storage, logger loggin
 		if traceID == "" {
 			_, traceID = apitrc.WithRequestTrace(r)
 		}
+		if scopes, ok := auth.ScopesFromContext(r.Context()); ok {
+			ctx = auth.WithScopes(ctx, scopes)
+		}
 		return apitrc.WithContext(ctx, traceID)
 	})))
 
