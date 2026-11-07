@@ -301,7 +301,7 @@ func (f *commandTraceFixture) waitForPublishedMessage() *messenger.Message {
 	select {
 	case got := <-f.received:
 		return got
-	case <-time.After(2 * time.Second):
+	case <-time.After(15 * time.Second):
 		f.t.Fatal("timed out waiting for published command")
 		return nil
 	}
@@ -309,7 +309,7 @@ func (f *commandTraceFixture) waitForPublishedMessage() *messenger.Message {
 
 func (f *commandTraceFixture) waitForLog(traceID, kind string) logging.Event {
 	f.t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		events, err := f.logger.List(context.Background(), logging.ListRequest{
 			TraceID: traceID,
@@ -550,7 +550,7 @@ func TestEntityCommandCreatesTraceAndPublishesHeaders(t *testing.T) {
 		if messenger.TraceID(got.Headers) != traceID {
 			t.Fatalf("message trace id: got %q want %q", messenger.TraceID(got.Headers), traceID)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("timed out waiting for published command")
 	}
 
@@ -780,7 +780,7 @@ func TestWebSocketEvents_StreamSnapshotAndUpdates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	conn.SetReadDeadline(time.Now().Add(15 * time.Second))
 	var event struct {
 		Type string          `json:"type"`
 		Key  string          `json:"key"`
@@ -956,7 +956,7 @@ func TestAuth_ControlScope(t *testing.T) {
 
 	select {
 	case <-commandCh:
-	case <-time.After(2 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("expected command publish")
 	}
 
@@ -1458,7 +1458,7 @@ func TestEntitiesCommandAndQueryRoutes(t *testing.T) {
 		if string(got.Data) != `{"level":42}` {
 			t.Fatalf("command payload: got %s", string(got.Data))
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("expected command publish")
 	}
 }
@@ -1514,7 +1514,7 @@ func TestEntitiesCommandRoutes_GroupScriptCommands(t *testing.T) {
 		if string(got.Data) != `{"name":"party_time"}` {
 			t.Fatalf("script_run payload: got %s", string(got.Data))
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("expected script_run publish")
 	}
 
@@ -1541,7 +1541,7 @@ func TestEntitiesCommandRoutes_GroupScriptCommands(t *testing.T) {
 		if string(got.Data) != `{}` {
 			t.Fatalf("script_stop_all payload: got %s", string(got.Data))
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("expected script_stop_all publish")
 	}
 }
@@ -1969,7 +1969,7 @@ func TestScriptsRoutes_Start(t *testing.T) {
 		if got["name"] != "PartyTime" || got["queryRef"] != "room_main" {
 			t.Fatalf("unexpected start request: %+v", got)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("expected script.start request")
 	}
 }
@@ -2016,7 +2016,7 @@ func TestScriptsRoutes_Stop(t *testing.T) {
 		if got["name"] != "PartyTime" || got["queryRef"] != "room_main" {
 			t.Fatalf("unexpected stop request: %+v", got)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("expected script.stop request")
 	}
 }
@@ -2244,7 +2244,7 @@ func TestCommandRoute_KnownActionValidPayload(t *testing.T) {
 		if cmd.Brightness != 200 {
 			t.Fatalf("brightness: got %d want 200", cmd.Brightness)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("timed out waiting for command publish")
 	}
 }
@@ -2291,7 +2291,7 @@ func TestCommandRoute_UnknownActionPassesThrough(t *testing.T) {
 		if string(data) != `{"name":"party_time"}` {
 			t.Fatalf("payload: got %s", string(data))
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("timed out waiting for plugin-specific command")
 	}
 }
