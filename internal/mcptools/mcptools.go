@@ -150,17 +150,32 @@ Queries are named, reusable search definitions stored under sb-query.queries.* a
 	})
 
 	s.AddTool(mcp.NewTool("list_entities",
-		mcp.WithDescription("List all entities in storage"),
+		mcp.WithDescription("List entities in storage. With no arguments, returns every entity in full. "+
+			"Filter with type, plugin and search, and set summary to get only key, name, type, area, room, state and commands."),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
 		mcp.WithOpenWorldHintAnnotation(false),
+		mcp.WithString("type", mcp.Description("Only entities of this type, e.g. light, switch, sensor")),
+		mcp.WithString("plugin", mcp.Description("Only entities from this plugin, e.g. plugin-zigbee")),
+		mcp.WithString("search", mcp.Description("Case-insensitive text matched against key, name, profile name and labels such as Area and Room")),
+		mcp.WithBoolean("summary", mcp.Description("Return a compact record per entity instead of the full entity")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		entries, err := store.Search("*.*.*")
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
 		}
-		out, _ := json.Marshal(entries)
+		f := entityFilter{
+			Type:   req.GetString("type", ""),
+			Plugin: req.GetString("plugin", ""),
+			Search: req.GetString("search", ""),
+		}
+		summary := req.GetBool("summary", false)
+		if f.empty() && !summary {
+			out, _ := json.Marshal(entries)
+			return mcp.NewToolResultText(string(out)), nil
+		}
+		out, _ := json.Marshal(filterEntities(entries, f, summary))
 		return mcp.NewToolResultText(string(out)), nil
 	})
 
