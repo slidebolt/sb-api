@@ -45,6 +45,7 @@ func NewWithLogger(msg messenger.Messenger, store storage.Storage, logger loggin
 	routes.RegisterDevices(api, store)
 	routes.RegisterEntities(api, store, msg, logger)
 	routes.RegisterQuery(api, store)
+	routes.RegisterInventory(api, store)
 	routes.RegisterScripts(api, store, msg, logger)
 
 	mcpServer := mcptools.New(store, msg, logger)

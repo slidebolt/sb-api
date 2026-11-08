@@ -10,6 +10,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/slidebolt/sb-api/internal/inventory"
 	apitrc "github.com/slidebolt/sb-api/internal/trace"
 	logging "github.com/slidebolt/sb-logging-sdk"
 	messenger "github.com/slidebolt/sb-messenger-sdk"
@@ -147,6 +148,29 @@ Queries are named, reusable search definitions stored under sb-query.queries.* a
 		out := map[string]any{"key": key, "data": json.RawMessage(data)}
 		result, _ := json.Marshal(out)
 		return mcp.NewToolResultText(string(result)), nil
+	})
+
+	s.AddTool(mcp.NewTool("get_inventory",
+		mcp.WithDescription("Call this first to find anything in the home. One call returns every place (Area and Room), "+
+			"every group (one command reaches all its members), the saved queries, and one line per controllable entity "+
+			"with its key, type, name, area, room, labels and commands."),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(false),
+		mcp.WithString("scope", mcp.Description("controllable (default): entities that accept commands; all: every entity")),
+		mcp.WithBoolean("state", mcp.Description("Add a short state column such as on/off and brightness")),
+		mcp.WithString("section", mcp.Description("full (default), or summary to leave out the entity lines")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		entries, err := store.Search("*.*.*")
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
+		}
+		return mcp.NewToolResultText(inventory.Render(entries, inventory.Options{
+			Scope:   req.GetString("scope", ""),
+			State:   req.GetBool("state", false),
+			Section: req.GetString("section", ""),
+		})), nil
 	})
 
 	s.AddTool(mcp.NewTool("list_entities",
