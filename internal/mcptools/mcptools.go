@@ -151,7 +151,8 @@ Queries are named, reusable search definitions stored under sb-query.queries.* a
 	})
 
 	s.AddTool(mcp.NewTool("get_inventory",
-		mcp.WithDescription("Call this first to find anything in the home. One call returns every place (Area and Room), "+
+		mcp.WithDescription("Call this first to find anything in the home. One call returns the intents (phrase buttons to press "+
+			"when the request means one), every place (Area and Room), "+
 			"every group (one command reaches all its members), the saved queries, and one line per controllable entity "+
 			"with its key, type, name, area, room, labels and commands."),
 		mcp.WithReadOnlyHintAnnotation(true),

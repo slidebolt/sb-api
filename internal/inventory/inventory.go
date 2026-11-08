@@ -70,6 +70,20 @@ func (r record) label(k string) string {
 
 func (r record) controllable() bool { return len(r.Commands) > 0 }
 
+// intent reports whether the entity is a phrase button: it has phrases in the
+// Phrase label and can be pressed.
+func (r record) intent() bool {
+	if len(r.Labels["Phrase"]) == 0 {
+		return false
+	}
+	for _, c := range r.Commands {
+		if c == "button_press" {
+			return true
+		}
+	}
+	return false
+}
+
 func parse(entries []storage.Entry) []record {
 	out := make([]record, 0, len(entries))
 	for _, e := range entries {
@@ -100,6 +114,9 @@ func Render(entries []storage.Entry, opt Options) string {
 	all := parse(entries)
 	var shown []record
 	for _, r := range all {
+		if r.intent() {
+			continue // listed in INTENTS
+		}
 		if opt.Scope == ScopeAll || r.controllable() {
 			shown = append(shown, r)
 		}
@@ -110,6 +127,7 @@ func Render(entries []storage.Entry, opt Options) string {
 	fmt.Fprintf(&b, "generated %s; %d entities, %d listed (scope=%s)\n", opt.Now.UTC().Format(time.RFC3339), len(all), len(shown), opt.Scope)
 	b.WriteString("Entity keys are plugin.device.entity; send commands to a key. Area and Room are the entity's place labels.\n")
 
+	writeIntents(&b, all)
 	writePlaces(&b, shown)
 	writeGroups(&b, all)
 	writeQueries(&b, all)
@@ -118,6 +136,20 @@ func Render(entries []storage.Entry, opt Options) string {
 	}
 	writeGaps(&b, shown)
 	return b.String()
+}
+
+// --- intents ----------------------------------------------------------------
+
+func writeIntents(b *strings.Builder, all []record) {
+	b.WriteString("\n## INTENTS (check these first: if the request means one of them, even with a likely speech-recognition mistake, press it with button_press)\n")
+	b.WriteString("key\tname\tphrases\tdescription\n")
+	for _, r := range all {
+		if !r.intent() {
+			continue
+		}
+		row := []string{r.Key, r.name(), strings.Join(r.Labels["Phrase"], " | "), strings.Join(r.Labels["Description"], " ")}
+		b.WriteString(clean(strings.Join(row, "\t")) + "\n")
+	}
 }
 
 // --- places -----------------------------------------------------------------
@@ -282,7 +314,7 @@ func writeEntities(b *strings.Builder, rs []record, withState bool) {
 		}
 		return sorted[i].Key < sorted[j].Key
 	})
-	b.WriteString("\n## ENTITIES (groups are listed above, not here)\n")
+	b.WriteString("\n## ENTITIES (groups and intents are listed above, not here)\n")
 	header := "key\ttype\tname\tarea\troom\tlabels\tcommands"
 	if withState {
 		header += "\tstate"

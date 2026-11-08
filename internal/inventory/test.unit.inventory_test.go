@@ -9,7 +9,9 @@ import (
 	storage "github.com/slidebolt/sb-storage-sdk"
 )
 
-func entry(key, data string) storage.Entry { return storage.Entry{Key: key, Data: json.RawMessage(data)} }
+func entry(key, data string) storage.Entry {
+	return storage.Entry{Key: key, Data: json.RawMessage(data)}
+}
 
 var home = []storage.Entry{
 	entry("plugin-wiz.lamp1.light", `{"plugin":"plugin-wiz","type":"light","name":"lamp1","profile":{"name":"Kitchen Lamp"},
@@ -122,6 +124,34 @@ func TestRender_SummaryLeavesOutRows(t *testing.T) {
 	out := Render(home, Options{Now: fixed, Section: SectionSummary})
 	if strings.Contains(out, "## ENTITIES") || !strings.Contains(out, "## GROUPS") {
 		t.Fatalf("summary sections wrong:\n%s", out)
+	}
+}
+
+func TestRender_IntentsComeFirst(t *testing.T) {
+	withIntent := append(append([]storage.Entry(nil), home...),
+		entry("plugin-intent.intents.reading", `{"plugin":"plugin-intent","type":"button","name":"Reading time",
+			"labels":{"Phrase":["it's reading time","reading time"],"Description":["dims the lounge"]},"commands":["button_press"],"state":{"presses":2}}`),
+		entry("plugin-intent.intents.nophrase", `{"plugin":"plugin-intent","type":"button","name":"No phrases","commands":["button_press"]}`))
+	out := Render(withIntent, Options{Now: fixed})
+	if strings.Index(out, "## INTENTS") > strings.Index(out, "## PLACES") {
+		t.Fatalf("intents must come before everything else:\n%s", out)
+	}
+	intents := section(t, out, "INTENTS")
+	want := "plugin-intent.intents.reading\tReading time\tit's reading time | reading time\tdims the lounge\n"
+	if !strings.Contains(intents, want) {
+		t.Fatalf("missing %q in:\n%s", want, intents)
+	}
+	if strings.Contains(intents, "nophrase") {
+		t.Fatal("a button without phrases is not an intent")
+	}
+	if ents := section(t, out, "ENTITIES"); strings.Contains(ents, "intents.reading") || !strings.Contains(ents, "intents.nophrase") {
+		t.Fatalf("intents belong in INTENTS only:\n%s", ents)
+	}
+	if !strings.Contains(out, "9 entities, 6 listed") {
+		t.Fatalf("intents must not be counted as listed entities:\n%s", out)
+	}
+	if sum := Render(withIntent, Options{Now: fixed, Section: SectionSummary}); !strings.Contains(sum, "intents.reading") {
+		t.Fatal("the summary keeps intents")
 	}
 }
 
