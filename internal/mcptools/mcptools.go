@@ -50,7 +50,7 @@ The user invokes SlideBolt tools by prefixing their request with "sb". Examples:
   - "sb save a new automation called sunrise" → call save_script with the provided Lua source and type "automation"
   - "sb set brightness to 50 on kitchen light" → call send_command with action and JSON payload
 
-Entity keys follow the pattern plugin.device.entity (e.g. plugin-automation.group.basementedison).
+Entity keys follow the pattern plugin.device.entity (e.g. plugin-automation.group.downstairs).
 Command NATS subjects are plugin.device.entity.command.action.
 Scripts are Lua and managed under the sb-script.scripts.* keyspace. Definition type "script" means manual start only. Definition type "automation" means sb-script auto-starts it on service startup.
 Queries are named, reusable search definitions stored under sb-query.queries.* and referenced by name (queryRef) in scripts and automations.`),
@@ -132,7 +132,7 @@ Queries are named, reusable search definitions stored under sb-query.queries.* a
 		mcp.WithIdempotentHintAnnotation(true),
 		mcp.WithOpenWorldHintAnnotation(false),
 		mcp.WithString("plugin", mcp.Required(), mcp.Description("Plugin ID, e.g. plugin-esphome")),
-		mcp.WithString("device", mcp.Required(), mcp.Description("Device ID, e.g. switch_basement_edison")),
+		mcp.WithString("device", mcp.Required(), mcp.Description("Device ID, e.g. kitchen-lamp")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		plugin := req.GetString("plugin", "")
 		device := req.GetString("device", "")
@@ -186,8 +186,8 @@ Queries are named, reusable search definitions stored under sb-query.queries.* a
 		mcp.WithIdempotentHintAnnotation(true),
 		mcp.WithOpenWorldHintAnnotation(false),
 		mcp.WithString("plugin", mcp.Required(), mcp.Description("Plugin ID, e.g. plugin-esphome")),
-		mcp.WithString("device", mcp.Required(), mcp.Description("Device ID, e.g. basement-09-edison-01")),
-		mcp.WithString("entity", mcp.Required(), mcp.Description("Entity ID, e.g. basement-09-edison-01_668929361")),
+		mcp.WithString("device", mcp.Required(), mcp.Description("Device ID, e.g. kitchen-lamp")),
+		mcp.WithString("entity", mcp.Required(), mcp.Description("Entity ID, e.g. light")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		plugin := req.GetString("plugin", "")
 		device := req.GetString("device", "")
