@@ -34,6 +34,7 @@ func newMCPScopeFixture(t *testing.T, scopes []string) *mcpScopeFixture {
 	}
 	store := &fakeStore{}
 	seedToken(store, scopes)
+	seedEntity(store, "plugin-virtual.dev1.lamp", "light_turn_on", "light_turn_off")
 	logSvc, err := logserver.New(logcfg.Config{Target: "memory"})
 	if err != nil {
 		t.Fatal(err)

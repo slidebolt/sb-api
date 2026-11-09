@@ -14,6 +14,7 @@ import (
 	storage "github.com/slidebolt/sb-storage-sdk"
 
 	"github.com/slidebolt/sb-api/internal/auth"
+	"github.com/slidebolt/sb-api/internal/commands"
 	"github.com/slidebolt/sb-api/internal/mcptools"
 	"github.com/slidebolt/sb-api/internal/routes"
 	apitrc "github.com/slidebolt/sb-api/internal/trace"
@@ -48,7 +49,13 @@ func NewWithLogger(msg messenger.Messenger, store storage.Storage, logger loggin
 	routes.RegisterInventory(api, store)
 	routes.RegisterScripts(api, store, msg, logger)
 
-	mcpServer := mcptools.New(store, msg, logger)
+	// One phrasebook and sender for the whole API, so repeat detection sees
+	// every attempt.
+	book := &commands.Book{Store: store}
+	sender := &commands.Sender{Store: store, Msg: msg, Logs: logger, Book: book}
+	routes.RegisterPhrasebook(api, book)
+
+	mcpServer := mcptools.NewWithSender(store, msg, logger, sender)
 	router.Get("/ws/events", webSocketEvents(store, msg))
 	router.Mount("/mcp", server.NewStreamableHTTPServer(mcpServer, server.WithHTTPContextFunc(func(ctx context.Context, r *http.Request) context.Context {
 		traceID := apitrc.FromContext(r.Context())

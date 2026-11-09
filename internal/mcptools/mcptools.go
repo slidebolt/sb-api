@@ -10,6 +10,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/slidebolt/sb-api/internal/commands"
 	"github.com/slidebolt/sb-api/internal/inventory"
 	apitrc "github.com/slidebolt/sb-api/internal/trace"
 	logging "github.com/slidebolt/sb-logging-sdk"
@@ -33,6 +34,12 @@ const (
 
 // New builds an MCP server wired to the SlideBolt storage and messenger.
 func New(store storage.Storage, msg messenger.Messenger, logs logging.Store) *server.MCPServer {
+	return NewWithSender(store, msg, logs, &commands.Sender{Store: store, Msg: msg, Logs: logs, Book: &commands.Book{Store: store}})
+}
+
+// NewWithSender builds the MCP server around a shared command sender, whose
+// phrasebook is also served by the REST API.
+func NewWithSender(store storage.Storage, msg messenger.Messenger, logs logging.Store, sender *commands.Sender) *server.MCPServer {
 	s := server.NewMCPServer(
 		"SlideBolt",
 		"0.1.0",
@@ -43,13 +50,19 @@ func New(store storage.Storage, msg messenger.Messenger, logs logging.Store) *se
 
 The user invokes SlideBolt tools by prefixing their request with "sb". Examples:
   - "sb list entities" → call list_entities
-  - "sb turn the basement lights on" → call send_command with action "turn_on" targeting the appropriate entity
+  - "sb turn the basement lights on" → call send_command with action "light_turn_on" on the basement group
   - "sb run the partytime script" → call start_script with name "PartyTime"
   - "sb show me all entities tagged with Light" → call list_entities then filter by type/tag
   - "sb what devices are online" → call list_devices
   - "sb stop all scripts" → call list_scripts to find running instances, then stop_script for each
   - "sb save a new automation called sunrise" → call save_script with the provided Lua source and type "automation"
-  - "sb set brightness to 50 on kitchen light" → call send_command with action and JSON payload
+  - "sb set the kitchen light to 50%" → send_command action "light_set_brightness", payload {"brightness":127} (0-254)
+
+Before choosing a command for a spoken or typed request, call phrase_lookup with the person's words: it returns
+commands that worked (or failed) for similar words before. Pass the person's words as "request" to send_command.
+send_command checks the action against the entity's commands, then watches the result: only say it is done when
+the result says "verified". "NOT confirmed" means the devices did not respond: tell the person why, using the
+diagnostics, and do not try other entities. Only when the person says it did not work, call phrase_correct.
 
 Entity keys follow the pattern plugin.device.entity (e.g. plugin-automation.group.downstairs).
 Command NATS subjects are plugin.device.entity.command.action.
@@ -593,7 +606,11 @@ Queries are named, reusable search definitions stored under sb-query.queries.* a
 	})
 
 	s.AddTool(mcp.NewTool("send_command",
-		mcp.WithDescription("Send a command to an entity via NATS"),
+		mcp.WithDescription("Send a command to an entity. It is checked first: the action must be one the entity lists "+
+			"(the error names the actions it takes and their payload fields). After sending, it watches the entity "+
+			"(for a group, its members) for up to 3 s and reports whether the state actually changed: only tell the "+
+			"person it is done when the result says verified. Pass the person's words as request so the result is "+
+			"learned in the phrasebook; asking again soon after marks the earlier attempt and adds diagnostics."),
 		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(false),
@@ -601,29 +618,92 @@ Queries are named, reusable search definitions stored under sb-query.queries.* a
 		mcp.WithString("plugin", mcp.Required()),
 		mcp.WithString("device", mcp.Required()),
 		mcp.WithString("entity", mcp.Required()),
-		mcp.WithString("action", mcp.Required(), mcp.Description("Command action, e.g. turn_on")),
-		mcp.WithString("payload", mcp.Description("Optional JSON command payload")),
+		mcp.WithString("action", mcp.Required(), mcp.Description("One of the entity's commands, e.g. light_turn_on, light_set_brightness")),
+		mcp.WithString("payload", mcp.Description(`Optional JSON command payload, e.g. {"brightness":127} (brightness is 0-254)`)),
+		mcp.WithString("request", mcp.Description("The person's words this command answers, e.g. \"set the basement lights to 50%\"")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		ctx, traceID := apitrc.Ensure(ctx)
-		plugin := req.GetString("plugin", "")
-		device := req.GetString("device", "")
-		entity := req.GetString("entity", "")
-		action := req.GetString("action", "")
-		payload := req.GetString("payload", "{}")
-
-		subject := fmt.Sprintf("%s.%s.%s.command.%s", plugin, device, entity, action)
-		headers := apitrc.MessageHeaders(traceID, "sb-api", plugin+"."+device+"."+entity, action)
-		if err := msg.PublishWithHeaders(subject, []byte(payload), headers); err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("publish failed: %v", err)), nil
+		payload := strings.TrimSpace(req.GetString("payload", ""))
+		if payload == "" {
+			payload = "{}"
 		}
-		apitrc.AppendLog(ctx, logs, "sb-api", "mcp.command.published", "info", "MCP published entity command", traceID, map[string]any{
-			"subject": subject,
-			"plugin":  plugin,
-			"device":  device,
-			"entity":  entity,
-			"action":  action,
+		if !json.Valid([]byte(payload)) {
+			return mcp.NewToolResultError("not sent: payload is not valid JSON"), nil
+		}
+		res, err := sender.Send(ctx, commands.Request{
+			Plugin:  req.GetString("plugin", ""),
+			Device:  req.GetString("device", ""),
+			Entity:  req.GetString("entity", ""),
+			Action:  req.GetString("action", ""),
+			Payload: json.RawMessage(payload),
+			Words:   strings.TrimSpace(req.GetString("request", "")),
+			Strict:  true,
+			Wait:    true,
 		})
-		return mcp.NewToolResultText(fmt.Sprintf("command published to %s", subject)), nil
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		if res.Rejection != nil {
+			return mcp.NewToolResultError(res.Text()), nil
+		}
+		return mcp.NewToolResultText(res.Text()), nil
+	})
+
+	s.AddTool(mcp.NewTool("phrase_lookup",
+		mcp.WithDescription("Look up what worked before for words like these. Returns the closest phrasebook entries: "+
+			"the words, the target entity, action and payload, and whether it was verified, suspect, unverified or known wrong. "+
+			"Numbers are ignored when matching, so adapt the payload (\"30%\" from a \"50%\" example). Never reuse a wrong entry."),
+		mcp.WithReadOnlyHintAnnotation(true),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(false),
+		mcp.WithString("text", mcp.Required(), mcp.Description("The person's words")),
+		mcp.WithNumber("limit", mcp.Description("Maximum entries (default 5)")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		text := strings.TrimSpace(req.GetString("text", ""))
+		if text == "" {
+			return mcp.NewToolResultError("text is required"), nil
+		}
+		matches, err := sender.Book.Lookup(text, int(req.GetFloat("limit", 5)))
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("lookup failed: %v", err)), nil
+		}
+		if len(matches) == 0 {
+			return mcp.NewToolResultText("No phrasebook entries for these words yet. Work it out from get_inventory; the result will be learned."), nil
+		}
+		var b strings.Builder
+		for _, m := range matches {
+			e := m.Entry
+			payload := string(e.Payload)
+			if payload == "" {
+				payload = "{}"
+			}
+			fmt.Fprintf(&b, "[%s] %q -> %s %s %s (used %d, entry %s)", strings.ToUpper(e.Status), e.Phrase, e.Target, e.Action, payload, e.Uses, e.ID)
+			if e.Reason != "" {
+				fmt.Fprintf(&b, " - %s", e.Reason)
+			}
+			b.WriteString("\n")
+		}
+		return mcp.NewToolResultText(strings.TrimRight(b.String(), "\n")), nil
+	})
+
+	s.AddTool(mcp.NewTool("phrase_correct",
+		mcp.WithDescription("Call this only when the person says a command did not work (\"that didn't work\", \"nothing changed\"), "+
+			"never because of a NOT confirmed result (that means the devices did not respond, not that the command was wrong). "+
+			"It marks the phrasebook entry wrong so it is not used again. Without entry it corrects the most recent "+
+			"command, or the recent one closest to request. Then work out the right command and send it with the same request."),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithOpenWorldHintAnnotation(false),
+		mcp.WithString("note", mcp.Required(), mcp.Description("What the person said or what was wrong")),
+		mcp.WithString("entry", mcp.Description("Entry id from send_command or phrase_lookup (optional)")),
+		mcp.WithString("request", mcp.Description("The original words, to pick the right recent command (optional)")),
+	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		e, err := sender.Book.Correct(strings.TrimSpace(req.GetString("entry", "")), req.GetString("request", ""), req.GetString("note", ""))
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		return mcp.NewToolResultText(fmt.Sprintf("Marked wrong: %q -> %s %s (entry %s). Now send the right command with the same request.", e.Phrase, e.Target, e.Action, e.ID)), nil
 	})
 
 	return s

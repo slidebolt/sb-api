@@ -43,6 +43,7 @@ type fakeStore struct {
 	queryResult            []storage.Entry
 	getResult              json.RawMessage
 	readFiles              map[storage.StorageTarget]map[string]json.RawMessage
+	entities               map[string]json.RawMessage
 }
 
 func (f *fakeStore) Save(v storage.Keyed) error {
@@ -56,7 +57,24 @@ func (f *fakeStore) Save(v storage.Keyed) error {
 }
 
 func (f *fakeStore) Get(key storage.Keyed) (json.RawMessage, error) {
+	if data, ok := f.entities[key.Key()]; ok {
+		return data, nil
+	}
 	return f.getResult, nil
+}
+
+// seedEntity stores an entity that lists the given commands, so command
+// routes (which now check the entity first) accept them.
+func seedEntity(store *fakeStore, key string, commands ...string) {
+	if store.entities == nil {
+		store.entities = map[string]json.RawMessage{}
+	}
+	parts := strings.SplitN(key, ".", 3)
+	data, _ := json.Marshal(map[string]any{
+		"plugin": parts[0], "deviceID": parts[1], "id": parts[2], "type": "light",
+		"name": parts[2], "commands": commands, "state": map[string]any{"power": false},
+	})
+	store.entities[key] = data
 }
 
 func (f *fakeStore) Delete(key storage.Keyed) error {
@@ -261,6 +279,7 @@ func newCommandTraceFixture(t *testing.T) *commandTraceFixture {
 
 	store := &fakeStore{}
 	seedToken(store, []string{"read", "control", "write", "admin"})
+	seedEntity(store, "plugin-esphome.basement-light-1.basement-light-1", "light_turn_on", "light_turn_off")
 
 	logSvc, err := logserver.New(logcfg.Config{Target: "memory"})
 	if err != nil {
@@ -503,6 +522,7 @@ func TestEntityCommandCreatesTraceAndPublishesHeaders(t *testing.T) {
 
 	store := &fakeStore{}
 	seedToken(store, []string{"read", "control", "write", "admin"})
+	seedEntity(store, "plugin-esphome.basement-light-1.basement-light-1", "light_turn_on", "light_turn_off")
 
 	logSvc, err := logserver.New(logcfg.Config{Target: "memory"})
 	if err != nil {
@@ -929,6 +949,7 @@ func TestAuth_ControlScope(t *testing.T) {
 
 	store := &fakeStore{}
 	seedToken(store, []string{"control"})
+	seedEntity(store, "plugin.dev1.ent1", "turn_on")
 
 	commandCh := make(chan *messenger.Message, 1)
 	_, err = msg.Subscribe("plugin.dev1.ent1.command.turn_on", func(m *messenger.Message) {
@@ -1472,6 +1493,7 @@ func TestEntitiesCommandRoutes_GroupScriptCommands(t *testing.T) {
 
 	store := &fakeStore{}
 	seedToken(store, []string{"read", "write", "control", "admin"})
+	seedEntity(store, "plugin-automation.group.basement", "light_turn_on", "script_run", "script_stop_all")
 
 	runCh := make(chan *messenger.Message, 1)
 	_, err = msg.Subscribe("plugin-automation.group.basement.command.script_run", func(m *messenger.Message) {
@@ -2163,6 +2185,7 @@ func TestCommandRoute_RejectsMalformedPayload(t *testing.T) {
 
 	store := &fakeStore{}
 	seedToken(store, []string{"read", "write", "control", "admin"})
+	seedEntity(store, "plugin.dev1.light1", "light_set_brightness")
 
 	published := make(chan struct{}, 1)
 	if _, err := msg.Subscribe("plugin.dev1.light1.command.light_set_brightness", func(m *messenger.Message) {
@@ -2207,6 +2230,7 @@ func TestCommandRoute_KnownActionValidPayload(t *testing.T) {
 
 	store := &fakeStore{}
 	seedToken(store, []string{"read", "write", "control", "admin"})
+	seedEntity(store, "plugin.dev1.light1", "light_set_brightness")
 
 	published := make(chan []byte, 1)
 	if _, err := msg.Subscribe("plugin.dev1.light1.command.light_set_brightness", func(m *messenger.Message) {
@@ -2258,6 +2282,8 @@ func TestCommandRoute_UnknownActionPassesThrough(t *testing.T) {
 
 	store := &fakeStore{}
 	seedToken(store, []string{"read", "write", "control", "admin"})
+	// A plugin-specific action sb-domain does not know passes through when the entity lists it.
+	seedEntity(store, "plugin-automation.group.living", "script_run")
 
 	published := make(chan []byte, 1)
 	if _, err := msg.Subscribe("plugin-automation.group.living.command.script_run", func(m *messenger.Message) {

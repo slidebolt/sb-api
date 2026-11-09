@@ -3,9 +3,9 @@ package routes
 import (
 	"context"
 	"encoding/json"
-	"reflect"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/slidebolt/sb-api/internal/commands"
 	apitrc "github.com/slidebolt/sb-api/internal/trace"
 	domain "github.com/slidebolt/sb-domain"
 	logging "github.com/slidebolt/sb-logging-sdk"
@@ -191,16 +191,15 @@ func RegisterEntities(api huma.API, store storage.Storage, msg messenger.Messeng
 			"action":  input.Action,
 		})
 
-		// If the action is registered in the domain, validate the payload
-		// against the registered type before publishing. This catches type
-		// mismatches (e.g. brightness="potato") at the API boundary.
-		// Unknown actions pass through unchanged — the API is a gateway and
-		// cannot know every plugin's custom command types.
-		if typ, ok := domain.LookupCommand(input.Action); ok {
-			v := reflect.New(typ).Interface()
-			if err := json.Unmarshal(input.Body, v); err != nil {
-				return nil, huma.Error400BadRequest("invalid payload for "+input.Action+": "+err.Error(), err)
-			}
+		// The entity must exist and list the action, and a payload for an
+		// action sb-domain knows must decode and pass its Validate. Plugin
+		// specific actions are accepted when the entity lists them. Extra
+		// payload fields are tolerated here (strict checking is for agents).
+		if _, err := commands.Validate(store, target, input.Action, input.Body, false); err != nil {
+			apitrc.AppendLog(ctx, logger, "sb-api", "api.command.rejected", "warn", "API rejected entity command", traceID, map[string]any{
+				"target": target, "action": input.Action, "reason": err.Error(),
+			})
+			return nil, huma.Error400BadRequest(err.Error())
 		}
 
 		headers := apitrc.MessageHeaders(traceID, "sb-api", target, input.Action)

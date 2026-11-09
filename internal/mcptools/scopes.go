@@ -23,10 +23,12 @@ var toolScopes = map[string]auth.Scope{
 	"list_logs":     auth.ScopeRead,
 	"get_log":       auth.ScopeRead,
 	"get_inventory": auth.ScopeRead,
+	"phrase_lookup": auth.ScopeRead,
 
-	"send_command": auth.ScopeControl,
-	"start_script": auth.ScopeControl,
-	"stop_script":  auth.ScopeControl,
+	"send_command":   auth.ScopeControl,
+	"start_script":   auth.ScopeControl,
+	"stop_script":    auth.ScopeControl,
+	"phrase_correct": auth.ScopeControl,
 
 	"create_device": auth.ScopeWrite,
 	"create_entity": auth.ScopeWrite,
