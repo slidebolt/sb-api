@@ -2295,3 +2295,85 @@ func TestCommandRoute_UnknownActionPassesThrough(t *testing.T) {
 		t.Fatal("timed out waiting for plugin-specific command")
 	}
 }
+
+func TestScriptsRoutes_RunningFromSwitchEntities(t *testing.T) {
+	msg, err := messenger.Mock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer msg.Close()
+
+	// The instance record is missing from the index (it was rewritten while
+	// running), but the switch entity sb-script keeps says the instance runs.
+	store := &fakeStore{
+		searchResultsByPattern: map[string][]storage.Entry{
+			"sb-script.scripts.>": {
+				{Key: "sb-script.scripts.Glow", Data: json.RawMessage(`{"type":"script","name":"Glow","source":"Script(\"Glow\", ...)"}`)},
+				{Key: "sb-script.scripts.Idle", Data: json.RawMessage(`{"type":"automation","name":"Idle","source":"Automation(\"Idle\", ...)"}`)},
+			},
+			"sb-script.instances.>": {},
+			"sb-script.*.*": {
+				{Key: "sb-script.scripts.Glow", Data: json.RawMessage(`{"type":"script","name":"Glow"}`)},
+				{Key: "sb-script.script-glow.room_a", Data: json.RawMessage(`{"type":"switch","state":{"power":true,"running":true}}`)},
+				{Key: "sb-script.script-glow.room_b", Data: json.RawMessage(`{"type":"switch","state":{"power":false,"running":false}}`)},
+				{Key: "sb-script.automation-idle.enabled", Data: json.RawMessage(`{"type":"switch","state":{"power":false,"running":false}}`)},
+			},
+		},
+	}
+	seedToken(store, []string{"read", "write", "control", "admin"})
+
+	srv := httptest.NewServer(New(msg, store))
+	defer srv.Close()
+
+	resp, err := authGet(srv.URL + "/scripts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var scripts []map[string]any
+	decodeBody(t, resp, &scripts)
+	if len(scripts) != 2 {
+		t.Fatalf("scripts: %+v", scripts)
+	}
+	glow, idle := scripts[0], scripts[1]
+	if glow["running"] != true {
+		t.Fatalf("Glow should be running: %+v", glow)
+	}
+	if ents, _ := glow["entities"].([]any); len(ents) != 2 || ents[0] != "sb-script.script-glow.room_a" {
+		t.Fatalf("Glow entities: %+v", glow["entities"])
+	}
+	if idle["running"] != false {
+		t.Fatalf("Idle should not be running: %+v", idle)
+	}
+	if ents, _ := idle["entities"].([]any); len(ents) != 1 || ents[0] != "sb-script.automation-idle.enabled" {
+		t.Fatalf("Idle entities: %+v", idle["entities"])
+	}
+}
+
+func TestScriptsRoutes_Delete(t *testing.T) {
+	msg, err := messenger.Mock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer msg.Close()
+
+	store := &fakeStore{getResult: json.RawMessage(`{"type":"script","name":"Glow"}`)}
+	seedToken(store, []string{"read", "write"})
+	srv := httptest.NewServer(New(msg, store))
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodDelete, srv.URL+"/scripts/Glow", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := authDo(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status: got %d want %d", resp.StatusCode, http.StatusNoContent)
+	}
+	if store.deletedKey != "sb-script.scripts.Glow" {
+		t.Fatalf("deleted key: %q", store.deletedKey)
+	}
+}

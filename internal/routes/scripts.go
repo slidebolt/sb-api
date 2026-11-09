@@ -96,6 +96,9 @@ type Script struct {
 	Source    string           `json:"source"`
 	Running   bool             `json:"running"`
 	Instances []ScriptInstance `json:"instances,omitempty"`
+	// Entities are the script's switch entities (sb-script.script-<name>.<scope>,
+	// or sb-script.automation-<name>.enabled), maintained by sb-script.
+	Entities []string `json:"entities,omitempty"`
 }
 
 type ScriptsListOutput struct {
@@ -175,6 +178,26 @@ func RegisterScripts(api huma.API, store storage.Storage, msg messenger.Messenge
 		}
 		if err := store.Save(key); err != nil {
 			return nil, huma.Error500InternalServerError("save failed", err)
+		}
+		return nil, nil
+	})
+
+	// DELETE /scripts/{name} — delete a script definition
+	huma.Register(api, huma.Operation{
+		Method:      "DELETE",
+		Path:        "/scripts/{name}",
+		Summary:     "Delete a script definition",
+		Description: "Deletes a saved Lua definition. sb-script stops its running instances and removes its switch entities.",
+		Tags:        []string{"scripts"},
+	}, func(ctx context.Context, input *struct {
+		Name string `path:"name"`
+	}) (*struct{}, error) {
+		key := rawKeyed{key: "sb-script.scripts." + input.Name}
+		if _, err := store.Get(key); err != nil {
+			return nil, huma.Error404NotFound("script not found")
+		}
+		if err := store.Delete(key); err != nil {
+			return nil, huma.Error500InternalServerError("delete failed", err)
 		}
 		return nil, nil
 	})
@@ -329,6 +352,43 @@ func loadScripts(store storage.Storage) ([]Script, error) {
 		s.Instances = append(s.Instances, inst)
 	}
 
+	// The switch entities sb-script keeps record what runs too, written without
+	// the delete-and-rewrite of instance records, so a running instance whose
+	// record is briefly missing from the index still shows as running.
+	entEntries, err := store.Search("sb-script.*.*")
+	if err != nil {
+		return nil, err
+	}
+	byDevice := map[string]*Script{}
+	for name, s := range byName {
+		lower := strings.ToLower(name)
+		byDevice["script-"+lower] = s
+		byDevice["automation-"+lower] = s
+	}
+	for _, entry := range entEntries {
+		parts := strings.Split(entry.Key, ".")
+		if len(parts) != 3 {
+			continue
+		}
+		s, ok := byDevice[parts[1]]
+		if !ok {
+			continue
+		}
+		var ent struct {
+			Type  string `json:"type"`
+			State struct {
+				Running bool `json:"running"`
+			} `json:"state"`
+		}
+		if json.Unmarshal(entry.Data, &ent) != nil || ent.Type != "switch" {
+			continue
+		}
+		s.Entities = append(s.Entities, entry.Key)
+		if ent.State.Running {
+			s.Running = true
+		}
+	}
+
 	names := make([]string, 0, len(byName))
 	for name := range byName {
 		names = append(names, name)
@@ -338,6 +398,7 @@ func loadScripts(store storage.Storage) ([]Script, error) {
 	out := make([]Script, 0, len(names))
 	for _, name := range names {
 		s := byName[name]
+		sort.Strings(s.Entities)
 		sort.Slice(s.Instances, func(i, j int) bool { return s.Instances[i].Hash < s.Instances[j].Hash })
 		out = append(out, *s)
 	}
