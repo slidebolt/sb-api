@@ -350,6 +350,26 @@ func TestLogsRESTFiltersByEntity(t *testing.T) {
 	}
 }
 
+func TestLogsRESTReturnsEmptyArray(t *testing.T) {
+	f := newCommandTraceFixture(t)
+	res, err := authGet(f.server.URL + "/logs?level=error")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("status %d: %s", res.StatusCode, body)
+	}
+	var events []logging.Event
+	if err := json.NewDecoder(res.Body).Decode(&events); err != nil {
+		t.Fatal(err)
+	}
+	if events == nil || len(events) != 0 {
+		t.Fatalf("expected non-nil empty list, got %#v", events)
+	}
+}
+
 func (f *commandTraceFixture) waitForLog(traceID, kind string) logging.Event {
 	f.t.Helper()
 	deadline := time.Now().Add(15 * time.Second)

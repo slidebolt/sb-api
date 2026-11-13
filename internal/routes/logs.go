@@ -48,6 +48,9 @@ func RegisterLogs(api huma.API, store logging.Store) {
 		if err != nil {
 			return nil, huma.Error500InternalServerError("list logs failed", err)
 		}
+		if events == nil {
+			events = []logging.Event{}
+		}
 		return &LogsOutput{Body: events}, nil
 	})
 
