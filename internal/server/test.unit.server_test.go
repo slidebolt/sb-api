@@ -326,6 +326,30 @@ func (f *commandTraceFixture) waitForPublishedMessage() *messenger.Message {
 	}
 }
 
+func TestLogsRESTFiltersByEntity(t *testing.T) {
+	f := newCommandTraceFixture(t)
+	err := f.logger.Append(context.Background(), logging.Event{ID: "event-1", TS: time.Now().UTC(), Source: "plugin-tv", Kind: "state", Level: "info", Message: "updated", Plugin: "plugin-tv", Device: "tuner", Entity: "channel"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := authGet(f.server.URL + "/logs?plugin=plugin-tv&device=tuner&entity=channel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(res.Body)
+		t.Fatalf("status %d: %s", res.StatusCode, body)
+	}
+	var events []logging.Event
+	if err := json.NewDecoder(res.Body).Decode(&events); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].ID != "event-1" {
+		t.Fatalf("unexpected logs: %#v", events)
+	}
+}
+
 func (f *commandTraceFixture) waitForLog(traceID, kind string) logging.Event {
 	f.t.Helper()
 	deadline := time.Now().Add(15 * time.Second)

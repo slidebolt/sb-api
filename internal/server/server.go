@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"net/http"
+	"os"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
@@ -50,6 +51,12 @@ func NewWithLogger(msg messenger.Messenger, store storage.Storage, logger loggin
 	routes.RegisterScripts(api, store, msg, logger)
 	routes.RegisterTimers(api, msg)
 	routes.RegisterMedia(api, msg)
+	routes.RegisterLogs(api, logger)
+	managerURL := os.Getenv("SB_MANAGER_STATUS_URL")
+	if managerURL == "" {
+		managerURL = "http://127.0.0.1:29010"
+	}
+	routes.RegisterRuntime(api, managerURL)
 
 	// One phrasebook and sender for the whole API, so repeat detection sees
 	// every attempt.
