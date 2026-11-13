@@ -31,7 +31,7 @@ func (a *App) Hello() contract.HelloResponse {
 		ID:              "api",
 		Kind:            contract.KindService,
 		ContractVersion: contract.ContractVersion,
-		DependsOn:       []string{"messenger", "storage"},
+		DependsOn:       []string{"messenger", "storage", "scheduler"},
 	}
 }
 

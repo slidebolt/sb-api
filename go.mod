@@ -8,11 +8,12 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/mark3labs/mcp-go v0.45.0
 	github.com/slidebolt/sb-contract v1.0.6
-	github.com/slidebolt/sb-domain v1.0.16
+	github.com/slidebolt/sb-domain v1.0.17
 	github.com/slidebolt/sb-logging v1.0.7
 	github.com/slidebolt/sb-logging-sdk v1.0.9
 	github.com/slidebolt/sb-messenger-sdk v1.0.8
 	github.com/slidebolt/sb-runtime v1.0.6
+	github.com/slidebolt/sb-scheduler-sdk v0.1.0
 	github.com/slidebolt/sb-storage-sdk v1.0.8
 )
 

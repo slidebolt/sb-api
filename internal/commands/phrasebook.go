@@ -255,10 +255,12 @@ func (b *Book) AttachDiagnostics(id string, lines []string) error {
 	return b.save(e)
 }
 
-// Correct marks an entry wrong with the person's note. With no id it picks
-// the most recent attempt (within EscalationWindow), optionally the one whose
-// request best matches requestText.
-func (b *Book) Correct(id, requestText, note string) (Entry, error) {
+// Correct records what the person said about a command: worked=false marks
+// the entry wrong ("that didn't work"), worked=true marks it verified ("it
+// turned green"), which overrides a check that could not see the change. With
+// no id it picks the most recent attempt (within EscalationWindow), optionally
+// the one whose request best matches requestText.
+func (b *Book) Correct(id, requestText, note string, worked bool) (Entry, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if id == "" {
@@ -283,7 +285,11 @@ func (b *Book) Correct(id, requestText, note string) (Entry, error) {
 	if id == "" {
 		return Entry{}, fmt.Errorf("no recent command to correct; pass entry")
 	}
-	if err := b.mark(id, EntryWrong, "person said it did not work: "+strings.TrimSpace(note), ""); err != nil {
+	status, reason := EntryWrong, "person said it did not work: "+strings.TrimSpace(note)
+	if worked {
+		status, reason = EntryVerified, "person said it worked: "+strings.TrimSpace(note)
+	}
+	if err := b.mark(id, status, reason, ""); err != nil {
 		return Entry{}, err
 	}
 	return b.load(id)

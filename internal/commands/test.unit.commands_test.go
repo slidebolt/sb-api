@@ -450,7 +450,7 @@ func TestCorrect_MarksTheMostRecentCommandWrong(t *testing.T) {
 	b := &Book{Store: newMemStore(), Now: func() time.Time { return at(30) }}
 	record(t, b, attempt("turn on the bar lights", "light_turn_on", `{}`, StatusVerified, 0))
 	last := record(t, b, attempt("set the basement lights to 50%", "light_set_brightness", `{"brightness":127}`, StatusUnchecked, 20))
-	e, err := b.Correct("", "", "I didn't see any light changes")
+	e, err := b.Correct("", "", "I didn't see any light changes", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -575,7 +575,7 @@ func TestDiagnostics_GroupDevicesThatShareACondition(t *testing.T) {
 	for i := 0; i < 30; i++ {
 		dev := fmt.Sprintf("bulb-%02d", i)
 		store.put("plugin-esphome."+dev+".connection", map[string]any{
-			"type": "diagnostic",
+			"type":  "diagnostic",
 			"state": map[string]any{"connected": false, "lastError": fmt.Sprintf("dial tcp 10.0.0.%d:6053: connect: network is unreachable", i)},
 		})
 		lagging = append(lagging, TargetState{Key: "plugin-esphome." + dev + "." + dev + "_1", Name: dev})

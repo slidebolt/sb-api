@@ -36,6 +36,8 @@ var toolScopes = map[string]auth.Scope{
 	"save_script":   auth.ScopeWrite,
 	"save_query":    auth.ScopeWrite,
 	"delete_query":  auth.ScopeWrite,
+	"create_timer":  auth.ScopeWrite,
+	"delete_timer":  auth.ScopeWrite,
 }
 
 func toolScope(name string) auth.Scope {

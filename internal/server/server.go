@@ -48,6 +48,7 @@ func NewWithLogger(msg messenger.Messenger, store storage.Storage, logger loggin
 	routes.RegisterQuery(api, store)
 	routes.RegisterInventory(api, store)
 	routes.RegisterScripts(api, store, msg, logger)
+	routes.RegisterTimers(api, msg)
 
 	// One phrasebook and sender for the whole API, so repeat detection sees
 	// every attempt.

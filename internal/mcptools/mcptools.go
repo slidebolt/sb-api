@@ -62,7 +62,8 @@ Before choosing a command for a spoken or typed request, call phrase_lookup with
 commands that worked (or failed) for similar words before. Pass the person's words as "request" to send_command.
 send_command checks the action against the entity's commands, then watches the result: only say it is done when
 the result says "verified". "NOT confirmed" means the devices did not respond: tell the person why, using the
-diagnostics, and do not try other entities. Only when the person says it did not work, call phrase_correct.
+diagnostics, and do not try other entities. When the person tells you whether it worked, call phrase_correct:
+worked=false for "that didn't work", worked=true for "it did change" (a check can miss a change it cannot see).
 
 Entity keys follow the pattern plugin.device.entity (e.g. plugin-automation.group.downstairs).
 Command NATS subjects are plugin.device.entity.command.action.
@@ -687,25 +688,34 @@ Queries are named, reusable search definitions stored under sb-query.queries.* a
 	})
 
 	s.AddTool(mcp.NewTool("phrase_correct",
-		mcp.WithDescription("Call this only when the person says a command did not work (\"that didn't work\", \"nothing changed\"), "+
-			"never because of a NOT confirmed result (that means the devices did not respond, not that the command was wrong). "+
-			"It marks the phrasebook entry wrong so it is not used again. Without entry it corrects the most recent "+
-			"command, or the recent one closest to request. Then work out the right command and send it with the same request."),
+		mcp.WithDescription("Call this when the person tells you whether a command worked, never on your own. "+
+			"worked=false when they say it did not (\"that didn't work\", \"nothing changed\"): the phrasebook entry is marked wrong "+
+			"so it is not used again; then work out the right command and send it with the same request. "+
+			"worked=true when they say it did (\"it turned green\", \"yes, that worked\"), above all after a NOT confirmed result: "+
+			"the entry is marked verified, since the check missed a change the person saw; send nothing more. "+
+			"A NOT confirmed result alone is not a reason to call this. Without entry it applies to the most recent command, "+
+			"or the recent one closest to request."),
 		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(true),
 		mcp.WithOpenWorldHintAnnotation(false),
-		mcp.WithString("note", mcp.Required(), mcp.Description("What the person said or what was wrong")),
+		mcp.WithString("note", mcp.Required(), mcp.Description("What the person said")),
+		mcp.WithBoolean("worked", mcp.Description("true if the person said it worked, false (the default) if it did not")),
 		mcp.WithString("entry", mcp.Description("Entry id from send_command or phrase_lookup (optional)")),
 		mcp.WithString("request", mcp.Description("The original words, to pick the right recent command (optional)")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		e, err := sender.Book.Correct(strings.TrimSpace(req.GetString("entry", "")), req.GetString("request", ""), req.GetString("note", ""))
+		worked := req.GetBool("worked", false)
+		e, err := sender.Book.Correct(strings.TrimSpace(req.GetString("entry", "")), req.GetString("request", ""), req.GetString("note", ""), worked)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
+		}
+		if worked {
+			return mcp.NewToolResultText(fmt.Sprintf("Marked verified: %q -> %s %s (entry %s). It will be reused for these words. Nothing more to send.", e.Phrase, e.Target, e.Action, e.ID)), nil
 		}
 		return mcp.NewToolResultText(fmt.Sprintf("Marked wrong: %q -> %s %s (entry %s). Now send the right command with the same request.", e.Phrase, e.Target, e.Action, e.ID)), nil
 	})
 
+	registerTimerTools(s, msg)
 	return s
 }
 

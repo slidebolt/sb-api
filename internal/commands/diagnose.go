@@ -63,6 +63,9 @@ func (d Diagnoser) Diagnose(ctx context.Context, level, ask int, current Verific
 		devices[pd] = append(devices[pd], t)
 	}
 	var delivered map[string][]logging.Event
+	// Plugins that log deliveries at all. For one that does not, a missing
+	// record says nothing, so it is not reported.
+	records := map[string]bool{}
 	if d.Logs != nil && prevTrace != "" {
 		events, err := d.Logs.List(ctx, logging.ListRequest{TraceID: prevTrace, Limit: 500})
 		if err == nil {
@@ -71,6 +74,9 @@ func (d Diagnoser) Diagnose(ctx context.Context, level, ask int, current Verific
 				if e.Plugin != "" && e.Device != "" {
 					pd := e.Plugin + "." + e.Device
 					delivered[pd] = append(delivered[pd], e)
+					if strings.Contains(e.Kind, "received") || strings.Contains(e.Kind, "dropped") {
+						records[e.Plugin] = true
+					}
 				}
 			}
 		}
@@ -119,7 +125,7 @@ func (d Diagnoser) Diagnose(ctx context.Context, level, ask int, current Verific
 				dropped = append(dropped, label)
 			case received:
 				notes = append(notes, "plugin received the command")
-			default:
+			case records[strings.SplitN(pd, ".", 2)[0]]:
 				notes = append(notes, "no delivery record")
 			}
 		}

@@ -70,29 +70,25 @@ func Expectation(action string, payload json.RawMessage) (check, bool) {
 			got, ok := num(after, "temperature")
 			return ok && math.Abs(got-want) <= 10
 		}, true
-	case action == "light_set_rgb":
-		r, ok1 := num(p, "r")
-		g, ok2 := num(p, "g")
-		bl, ok3 := num(p, "b")
-		if !ok1 || !ok2 || !ok3 {
+	case strings.HasPrefix(action, "light_set_") && requestedColourAction(action):
+		want, ok := requestedColour(action, p)
+		if !ok {
 			return nil, false
 		}
-		want := []float64{r, g, bl}
 		return func(_, after map[string]any) bool {
-			got, ok := after["rgb"].([]any)
-			if !ok || len(got) < 3 {
-				return false
-			}
-			for i := range want {
-				v, _ := got[i].(float64)
-				if math.Abs(v-want[i]) > 12 {
-					return false
-				}
-			}
-			return true
+			got, ok := reportedColour(after)
+			return ok && sameColour(want, got)
 		}, true
 	}
 	return nil, false
+}
+
+func requestedColourAction(action string) bool {
+	switch action {
+	case "light_set_rgb", "light_set_rgbw", "light_set_rgbww", "light_set_hs", "light_set_xy":
+		return true
+	}
+	return false
 }
 
 // TargetState is one checked entity.

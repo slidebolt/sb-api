@@ -9,7 +9,9 @@ import (
 	storage "github.com/slidebolt/sb-storage-sdk"
 )
 
-func entry(key, data string) storage.Entry { return storage.Entry{Key: key, Data: json.RawMessage(data)} }
+func entry(key, data string) storage.Entry {
+	return storage.Entry{Key: key, Data: json.RawMessage(data)}
+}
 
 var sampleEntities = []storage.Entry{
 	entry("plugin-zigbee.0xa.default-light", `{"plugin":"plugin-zigbee","type":"light","name":"Light",
