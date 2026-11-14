@@ -9,7 +9,7 @@ require (
 	github.com/invopop/jsonschema v0.13.0
 	github.com/mark3labs/mcp-go v0.45.0
 	github.com/slidebolt/sb-contract v1.0.7
-	github.com/slidebolt/sb-domain v1.0.22
+	github.com/slidebolt/sb-domain v1.0.23
 	github.com/slidebolt/sb-logging v1.0.7
 	github.com/slidebolt/sb-logging-sdk v1.0.9
 	github.com/slidebolt/sb-media-sdk v1.0.3

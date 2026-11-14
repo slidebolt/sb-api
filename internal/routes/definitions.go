@@ -114,8 +114,10 @@ func RegisterDefinitions(api huma.API, store storage.Storage, managerURL string)
 			body.Coverage.Devices.Total++
 			var device domain.Device
 			_ = json.Unmarshal(data, &device)
-			catalog := plugins[device.Plugin]
-			if catalog != nil && device.Class != "" && hasDeviceClass(catalog.Definitions, device.Class) {
+			// Every valid device is an instance of the shared domain Device
+			// contract. Class is optional specialization data; when supplied it
+			// must be declared by the producing plugin.
+			if device.Class == "" || hasDeviceClass(plugins[device.Plugin], device.Class) {
 				body.Coverage.Devices.Resolved++
 			} else {
 				body.Coverage.Devices.Unresolved = append(body.Coverage.Devices.Unresolved, entry.Key)
@@ -199,11 +201,11 @@ func fetchDefinitionStatuses(ctx context.Context, client *http.Client, managerUR
 	err = json.NewDecoder(res.Body).Decode(&out)
 	return out, err
 }
-func hasDeviceClass(defs *contract.PluginDefinitions, class string) bool {
-	if defs == nil {
+func hasDeviceClass(plugin *PluginCatalog, class string) bool {
+	if plugin == nil || plugin.Definitions == nil {
 		return false
 	}
-	for _, d := range defs.DeviceClasses {
+	for _, d := range plugin.Definitions.DeviceClasses {
 		if d.Class == class {
 			return true
 		}
