@@ -68,6 +68,9 @@ func RegisterDefinitions(api huma.API, store storage.Storage, managerURL string)
 	client := &http.Client{Timeout: 2 * time.Second}
 	huma.Register(api, huma.Operation{Method: "GET", Path: "/definitions", Summary: "List serialized domain and plugin definitions", Description: "Returns code-owned schemas and descriptions plus live coverage. The response contains no plugin-specific presentation logic.", Tags: []string{"definitions"}}, func(ctx context.Context, _ *struct{}) (*DefinitionsOutput, error) {
 		body := DefinitionsBody{SchemaVersion: 1}
+		body.Coverage.Devices.Unresolved = []string{}
+		body.Coverage.Entities.Unresolved = []string{}
+		body.Coverage.Commands.Unresolved = []string{}
 		body.Domain.DeviceSchema = schemaFor(domain.Device{})
 
 		entityDefs := domain.EntityDefinitions()
