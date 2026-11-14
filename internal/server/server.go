@@ -57,6 +57,7 @@ func NewWithLogger(msg messenger.Messenger, store storage.Storage, logger loggin
 		managerURL = "http://127.0.0.1:29010"
 	}
 	routes.RegisterRuntime(api, managerURL)
+	routes.RegisterDefinitions(api, store, managerURL)
 
 	// One phrasebook and sender for the whole API, so repeat detection sees
 	// every attempt.

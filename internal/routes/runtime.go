@@ -8,18 +8,20 @@ import (
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	contract "github.com/slidebolt/sb-contract"
 )
 
 type ComponentStatus struct {
-	ID              string    `json:"id"`
-	Kind            string    `json:"kind"`
-	State           string    `json:"state"`
-	ContractVersion int       `json:"contractVersion"`
-	Dependencies    []string  `json:"dependencies,omitempty"`
-	StartedAt       time.Time `json:"startedAt,omitempty"`
-	ReadyAt         time.Time `json:"readyAt,omitempty"`
-	RestartCount    int       `json:"restartCount"`
-	LastError       string    `json:"lastError,omitempty"`
+	ID              string                      `json:"id"`
+	Kind            string                      `json:"kind"`
+	State           string                      `json:"state"`
+	ContractVersion int                         `json:"contractVersion"`
+	Dependencies    []string                    `json:"dependencies,omitempty"`
+	StartedAt       time.Time                   `json:"startedAt,omitempty"`
+	ReadyAt         time.Time                   `json:"readyAt,omitempty"`
+	RestartCount    int                         `json:"restartCount"`
+	LastError       string                      `json:"lastError,omitempty"`
+	Definitions     *contract.PluginDefinitions `json:"definitions,omitempty"`
 }
 
 type RuntimeOutput struct{ Body []ComponentStatus }
