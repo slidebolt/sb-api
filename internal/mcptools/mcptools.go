@@ -715,7 +715,7 @@ Queries are named, reusable search definitions stored under sb-query.queries.* a
 		return mcp.NewToolResultText(fmt.Sprintf("Marked wrong: %q -> %s %s (entry %s). Now send the right command with the same request.", e.Phrase, e.Target, e.Action, e.ID)), nil
 	})
 
-	registerTimerTools(s, msg)
+	registerScheduleTools(s, msg)
 	return s
 }
 

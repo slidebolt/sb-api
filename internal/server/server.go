@@ -49,7 +49,7 @@ func NewWithLogger(msg messenger.Messenger, store storage.Storage, logger loggin
 	routes.RegisterQuery(api, store)
 	routes.RegisterInventory(api, store)
 	routes.RegisterScripts(api, store, msg, logger)
-	routes.RegisterTimers(api, msg)
+	routes.RegisterSchedules(api, msg)
 	routes.RegisterMedia(api, msg)
 	routes.RegisterLogs(api, logger)
 	managerURL := os.Getenv("SB_MANAGER_STATUS_URL")
