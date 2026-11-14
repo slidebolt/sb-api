@@ -1458,9 +1458,9 @@ func TestEntitiesCommandAndQueryRoutes(t *testing.T) {
 	defer msg.Close()
 
 	store := &fakeStore{
-		getResult: json.RawMessage(`{"id":"ent1"}`),
+		getResult: json.RawMessage(`{"plugin":"plugin","deviceID":"dev1","id":"ent1","type":"switch","name":"Entity 1","state":{"power":true}}`),
 		queryResult: []storage.Entry{
-			{Key: "plugin.dev1.ent1", Data: json.RawMessage(`{"id":"ent1"}`)},
+			{Key: "plugin.dev1.ent1", Data: json.RawMessage(`{"plugin":"plugin","deviceID":"dev1","id":"ent1","type":"switch","name":"Entity 1","state":{"power":true}}`)},
 		},
 	}
 	seedToken(store, []string{"read", "write", "control", "admin"})
@@ -1692,8 +1692,9 @@ func TestEntitiesRoutes_List(t *testing.T) {
 	store := &fakeStore{
 		searchResult: []storage.Entry{
 			{Key: "plugin.dev1", Data: json.RawMessage(`{"name":"Device 1"}`)},
-			{Key: "plugin.dev1.ent1", Data: json.RawMessage(`{"id":"ent1"}`)},
-			{Key: "plugin.dev1.ent2", Data: json.RawMessage(`{"id":"ent2"}`)},
+			{Key: "plugin.dev1.ent1", Data: json.RawMessage(`{"plugin":"plugin","deviceID":"dev1","id":"ent1","type":"switch","name":"Entity 1","state":{"power":true}}`)},
+			{Key: "plugin.dev1.ent2", Data: json.RawMessage(`{"plugin":"plugin","deviceID":"dev1","id":"ent2","type":"sensor","name":"Entity 2","state":{"value":2}}`)},
+			{Key: "sb-api.tokens.secret", Data: json.RawMessage(`{"hash":"must-not-leak"}`)},
 		},
 	}
 	seedToken(store, []string{"read", "write", "control", "admin"})
@@ -1710,8 +1711,8 @@ func TestEntitiesRoutes_List(t *testing.T) {
 	}
 	var entities []map[string]any
 	decodeBody(t, resp, &entities)
-	if len(entities) != 3 {
-		t.Fatalf("expected 3 entities, got %d: %+v", len(entities), entities)
+	if len(entities) != 2 {
+		t.Fatalf("expected 2 valid entities, got %d: %+v", len(entities), entities)
 	}
 }
 

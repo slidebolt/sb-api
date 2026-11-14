@@ -3,6 +3,7 @@ package routes
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/slidebolt/sb-api/internal/commands"
@@ -52,6 +53,21 @@ type EntityKey struct {
 	EntityID string `path:"entity"`
 }
 
+// storedEntity returns data only when both the storage key and payload satisfy
+// the public entity contract. State storage also contains scripts, queries,
+// runtime records, and credentials; those are not entities and must never leak
+// through this API merely because their keys have three segments.
+func storedEntity(key string, data []byte) (json.RawMessage, bool) {
+	parts := strings.Split(key, ".")
+	if len(parts) != 3 {
+		return nil, false
+	}
+	if _, err := validateEntityBody(data, EntityKey{Plugin: parts[0], DeviceID: parts[1], EntityID: parts[2]}); err != nil {
+		return nil, false
+	}
+	return json.RawMessage(data), true
+}
+
 func (k EntityKey) Key() string { return k.Plugin + "." + k.DeviceID + "." + k.EntityID }
 
 type EntityInput struct {
@@ -81,9 +97,11 @@ func RegisterEntities(api huma.API, store storage.Storage, msg messenger.Messeng
 		if err != nil {
 			return nil, huma.Error500InternalServerError("storage search failed", err)
 		}
-		out := make([]EntityEntry, len(entries))
-		for i, e := range entries {
-			out[i] = EntityEntry{Key: e.Key, Data: json.RawMessage(e.Data)}
+		out := make([]EntityEntry, 0, len(entries))
+		for _, e := range entries {
+			if data, ok := storedEntity(e.Key, e.Data); ok {
+				out = append(out, EntityEntry{Key: e.Key, Data: data})
+			}
 		}
 		return &EntitiesOutput{Body: out}, nil
 	})
@@ -100,7 +118,11 @@ func RegisterEntities(api huma.API, store storage.Storage, msg messenger.Messeng
 		if err != nil {
 			return nil, huma.Error404NotFound("entity not found")
 		}
-		return &EntityOutput{Body: json.RawMessage(data)}, nil
+		entity, ok := storedEntity(input.EntityKey.Key(), data)
+		if !ok {
+			return nil, huma.Error404NotFound("entity not found")
+		}
+		return &EntityOutput{Body: entity}, nil
 	})
 
 	huma.Register(api, huma.Operation{
