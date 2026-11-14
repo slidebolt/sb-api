@@ -31,6 +31,10 @@ func (a *App) Hello() contract.HelloResponse {
 		ID:              "api",
 		Kind:            contract.KindService,
 		ContractVersion: contract.ContractVersion,
+		Setup: contract.RequiredSetup("Core",
+			contract.SetupField{Key: "port", Environment: "SB_API_PORT", Name: "API port", Description: "Local HTTP port used by the SlideBolt API.", Control: contract.SetupText, Generate: "free_port"},
+			contract.SetupField{Key: "manager_status_url", Environment: "SB_MANAGER_STATUS_URL", Name: "Manager status URL", Description: "Internal manager health endpoint used to report component state.", Control: contract.SetupText, Advanced: true},
+		),
 		DependsOn:       []string{"messenger", "storage", "scheduler"},
 	}
 }

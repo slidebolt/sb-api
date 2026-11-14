@@ -2218,6 +2218,44 @@ func TestScriptsRoutes_GetOne(t *testing.T) {
 	}
 }
 
+func TestScheduleReadRoutes(t *testing.T) {
+	msg, err := messenger.Mock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer msg.Close()
+	raw := json.RawMessage(`{"id":"schedule","plugin":"sb-scheduler","deviceID":"schedule-demo","type":"schedule","name":"Demo","commands":["schedule_enable","schedule_disable"],"state":{"enabled":true,"steps":[]}}`)
+	store := &fakeStore{
+		entities: map[string]json.RawMessage{"sb-scheduler.schedule-demo.schedule": raw},
+		searchResultsByPattern: map[string][]storage.Entry{
+			"sb-scheduler.schedule-*.schedule": {{Key: "sb-scheduler.schedule-demo.schedule", Data: raw}},
+		},
+	}
+	seedToken(store, []string{"read", "write", "control", "admin"})
+	srv := httptest.NewServer(New(msg, store))
+	defer srv.Close()
+
+	resp, err := authGet(srv.URL + "/schedules")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var list []map[string]any
+	decodeBody(t, resp, &list)
+	if resp.StatusCode != http.StatusOK || len(list) != 1 || list[0]["key"] != "sb-scheduler.schedule-demo.schedule" {
+		t.Fatalf("schedule list status=%d body=%+v", resp.StatusCode, list)
+	}
+
+	resp, err = authGet(srv.URL + "/schedules/demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var item map[string]any
+	decodeBody(t, resp, &item)
+	if resp.StatusCode != http.StatusOK || item["name"] != "Demo" {
+		t.Fatalf("schedule get status=%d body=%+v", resp.StatusCode, item)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Command validation
 // ---------------------------------------------------------------------------
