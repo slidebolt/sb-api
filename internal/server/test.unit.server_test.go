@@ -1168,8 +1168,9 @@ func TestDevicesRoutes_ListAndUpsert(t *testing.T) {
 
 	store := &fakeStore{
 		searchResult: []storage.Entry{
-			{Key: "plugin.dev1", Data: json.RawMessage(`{"name":"Device 1"}`)},
+			{Key: "plugin.dev1", Data: json.RawMessage(`{"plugin":"plugin","id":"dev1","name":"Device 1","entities":[]}`)},
 			{Key: "plugin.dev1.ent1", Data: json.RawMessage(`{"name":"Entity 1"}`)},
+			{Key: "sb-script.scripts", Data: json.RawMessage(`{"id":"scripts","name":"Scripts","type":"script-collection"}`)},
 		},
 	}
 	seedToken(store, []string{"read", "write", "control", "admin"})

@@ -56,6 +56,20 @@ type DeviceKey struct {
 
 func (k DeviceKey) Key() string { return k.Plugin + "." + k.ID }
 
+// storedDevice accepts only records that satisfy the public device envelope.
+// State storage also contains two-part collection and legacy records; key
+// shape alone is not sufficient to identify a device.
+func storedDevice(key string, data []byte) (json.RawMessage, bool) {
+	parts := strings.Split(key, ".")
+	if len(parts) != 2 {
+		return nil, false
+	}
+	if _, err := validateDeviceBody(data, DeviceKey{Plugin: parts[0], ID: parts[1]}); err != nil {
+		return nil, false
+	}
+	return json.RawMessage(data), true
+}
+
 // rawKeyed wraps a key + raw JSON so it satisfies storage.Keyed.
 type rawKeyed struct {
 	key  string
@@ -79,12 +93,9 @@ func RegisterDevices(api huma.API, store storage.Storage) {
 		}
 		out := make([]DeviceEntry, 0, len(entries))
 		for _, e := range entries {
-			// Storage wildcard search is prefix-oriented, so filter to exact
-			// two-part keys here to keep /devices from leaking entity rows.
-			if strings.Count(e.Key, ".") != 1 {
-				continue
+			if data, ok := storedDevice(e.Key, e.Data); ok {
+				out = append(out, DeviceEntry{Key: e.Key, Data: data})
 			}
-			out = append(out, DeviceEntry{Key: e.Key, Data: json.RawMessage(e.Data)})
 		}
 		return &DevicesOutput{Body: out}, nil
 	})
@@ -101,7 +112,11 @@ func RegisterDevices(api huma.API, store storage.Storage) {
 		if err != nil {
 			return nil, huma.Error404NotFound("device not found")
 		}
-		return &DeviceOutput{Body: json.RawMessage(data)}, nil
+		device, ok := storedDevice(input.DeviceKey.Key(), data)
+		if !ok {
+			return nil, huma.Error404NotFound("device not found")
+		}
+		return &DeviceOutput{Body: device}, nil
 	})
 
 	huma.Register(api, huma.Operation{
