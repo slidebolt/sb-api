@@ -716,6 +716,7 @@ Queries are named, reusable search definitions stored under sb-query.queries.* a
 	})
 
 	registerScheduleTools(s, msg)
+	registerMediaTools(s, store, msg, sender)
 	return s
 }
 
