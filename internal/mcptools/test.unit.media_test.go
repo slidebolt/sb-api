@@ -7,13 +7,52 @@ import (
 	"time"
 
 	domain "github.com/slidebolt/sb-domain"
-	testkit "github.com/slidebolt/sb-testkit"
+	storage "github.com/slidebolt/sb-storage-sdk"
 )
 
+type mediaTestStore struct{ entries map[string]json.RawMessage }
+
+func newMediaTestStore() *mediaTestStore {
+	return &mediaTestStore{entries: map[string]json.RawMessage{}}
+}
+func (s *mediaTestStore) Save(v storage.Keyed) error {
+	b, e := json.Marshal(v)
+	s.entries[v.Key()] = b
+	return e
+}
+func (s *mediaTestStore) Get(k storage.Keyed) (json.RawMessage, error) {
+	return s.entries[k.Key()], nil
+}
+func (s *mediaTestStore) Delete(k storage.Keyed) error { delete(s.entries, k.Key()); return nil }
+func (s *mediaTestStore) Search(_ string) ([]storage.Entry, error) {
+	out := make([]storage.Entry, 0, len(s.entries))
+	for k, v := range s.entries {
+		out = append(out, storage.Entry{Key: k, Data: v})
+	}
+	return out, nil
+}
+func (s *mediaTestStore) SearchFiles(storage.StorageTarget, string) ([]storage.Entry, error) {
+	return nil, nil
+}
+func (s *mediaTestStore) Query(storage.Query) ([]storage.Entry, error) { return nil, nil }
+func (s *mediaTestStore) WriteFile(storage.StorageTarget, storage.Keyed, json.RawMessage) error {
+	return nil
+}
+func (s *mediaTestStore) ReadFile(storage.StorageTarget, storage.Keyed) (json.RawMessage, error) {
+	return nil, nil
+}
+func (s *mediaTestStore) DeleteFile(storage.StorageTarget, storage.Keyed) error { return nil }
+func (s *mediaTestStore) SetPrivate(storage.Keyed, json.RawMessage) error       { return nil }
+func (s *mediaTestStore) GetPrivate(storage.Keyed) (json.RawMessage, error)     { return nil, nil }
+func (s *mediaTestStore) DeletePrivate(storage.Keyed) error                     { return nil }
+func (s *mediaTestStore) SetInternal(storage.Keyed, json.RawMessage) error      { return nil }
+func (s *mediaTestStore) GetInternal(storage.Keyed) (json.RawMessage, error)    { return nil, nil }
+func (s *mediaTestStore) DeleteInternal(storage.Keyed) error                    { return nil }
+func (s *mediaTestStore) SetProfile(storage.Keyed, json.RawMessage) error       { return nil }
+func (s *mediaTestStore) Close()                                                {}
+
 func TestFindRecorderUsesAdvertisedGenericCommand(t *testing.T) {
-	env := testkit.NewTestEnv(t)
-	env.Start("storage")
-	store := env.Storage()
+	store := newMediaTestStore()
 	if err := store.Save(domain.Entity{ID: "dvr", Plugin: "plugin-media", DeviceID: "server", Type: "recorder", Commands: []string{"record_start"}, State: domain.Recorder{Status: "idle"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -24,9 +63,7 @@ func TestFindRecorderUsesAdvertisedGenericCommand(t *testing.T) {
 }
 
 func TestWaitForAiringScheduleRequiresScheduleEntity(t *testing.T) {
-	env := testkit.NewTestEnv(t)
-	env.Start("storage")
-	store := env.Storage()
+	store := newMediaTestStore()
 	input, _ := json.Marshal(map[string]any{"metadata": map[string]any{"program": map[string]any{"airingID": "air-7"}}})
 	state := domain.Schedule{Enabled: true, Steps: []domain.ScheduleStep{{ID: "start", Actions: []domain.Action{{Target: "plugin-media.server.dvr", Command: "record_start", Input: input}}}}}
 	if err := store.Save(domain.Entity{ID: "recording-air-7", Plugin: "plugin-media", DeviceID: "server", Type: "schedule", State: state}); err != nil {
