@@ -66,8 +66,8 @@ github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec/go.mod h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=
 github.com/rogpeppe/go-internal v1.14.1 h1:UQB4HGPB6osV0SQTLymcB4TgvyWu6ZyliaW0tI/otEQ=
 github.com/rogpeppe/go-internal v1.14.1/go.mod h1:MaRKkUm5W0goXpeCfT7UZI6fk/L7L7so1lCWt35ZSgc=
-github.com/slidebolt/sb-contract v1.0.9 h1:+OKQwIqT2xv45a2Xu/6bjLMPPgfp2la0v2lBV7rPUg4=
-github.com/slidebolt/sb-contract v1.0.9/go.mod h1:nG2ebwepjRdd2t6cA0VFV34FuWJUF7DQrqcVVxDsza8=
+github.com/slidebolt/sb-contract v1.0.12 h1:n3B+PelUvlft2elju76KoNnL8g06Hu41AgxW8i+eyZY=
+github.com/slidebolt/sb-contract v1.0.12/go.mod h1:nG2ebwepjRdd2t6cA0VFV34FuWJUF7DQrqcVVxDsza8=
 github.com/slidebolt/sb-domain v1.0.24 h1:P8DKmory5ue5axeTPRWsvna5uhKPnxRzhBpq9w4Q/kM=
 github.com/slidebolt/sb-domain v1.0.24/go.mod h1:F3tFWsZ4jqqHpeAWlXS1/fpsjMmN0WtcbCiTcKwfh9Y=
 github.com/slidebolt/sb-logging v1.0.7 h1:Hadw3JZaDz/P6ywcIQrSgaWEyW2QMXpCN1iN3CllSHc=
@@ -78,8 +78,8 @@ github.com/slidebolt/sb-media-sdk v1.0.4 h1:AEhFWWXsTpnrsEhAndzpsmskNWQIlXolKYGr
 github.com/slidebolt/sb-media-sdk v1.0.4/go.mod h1:bN5HHkbaZ+WPBfB1ymn8L7jCGPr29Kb7oMNHtdNYSBA=
 github.com/slidebolt/sb-messenger-sdk v1.0.9 h1:lDYUqkm21xf4VE69Z2SiLnfp9k975ZxhP7waVmq4OPA=
 github.com/slidebolt/sb-messenger-sdk v1.0.9/go.mod h1:yJxHiUgqcO/TUj9yiPkVyTwrN0/3BBy6HD17TdWPCEA=
-github.com/slidebolt/sb-runtime v1.0.7 h1:bY0bBtZrxxoEjKBHRWYTn12vgIeNUtIUU1zLT/7M5Tw=
-github.com/slidebolt/sb-runtime v1.0.7/go.mod h1:t9FJO4SG0Xhz6zTLkncWGQxn1uRYxPFTGWgedyFydpc=
+github.com/slidebolt/sb-runtime v1.0.9 h1:aiBZbJ1FRCBvMk/eAlQtgP0afZkZY6lZS8cWWnynytk=
+github.com/slidebolt/sb-runtime v1.0.9/go.mod h1:TzCCLv/gJUSbRoQCKMa6xO8B5VW0Oy6pHEl4I7JLhAk=
 github.com/slidebolt/sb-scheduler-sdk v0.2.0 h1:RIfyFTQnYI5myfpNbVfgZv0UcdPteCx2zBKEQmBajQ8=
 github.com/slidebolt/sb-scheduler-sdk v0.2.0/go.mod h1:GUIrzWKEjEauo7KvxVRtzv/ZUGrATgEqB6zIMj4LDbQ=
 github.com/slidebolt/sb-storage-sdk v1.0.8 h1:ikDWXrzHKYkAqqYKizGp7iLbqS6ReWwdIcuawHWP98c=

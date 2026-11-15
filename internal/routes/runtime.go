@@ -22,6 +22,17 @@ type ComponentStatus struct {
 	RestartCount    int                         `json:"restartCount"`
 	LastError       string                      `json:"lastError,omitempty"`
 	Definitions     *contract.PluginDefinitions `json:"definitions,omitempty"`
+	Resources       []ExternalResourceStatus    `json:"resources,omitempty"`
+}
+
+type ExternalResourceStatus struct {
+	ID            string                        `json:"id"`
+	Kind          contract.ExternalResourceKind `json:"kind"`
+	Name          string                        `json:"name"`
+	Description   string                        `json:"description"`
+	State         string                        `json:"state"`
+	LastCheckedAt time.Time                     `json:"lastCheckedAt,omitempty"`
+	LastError     *contract.ResourceError       `json:"lastError,omitempty"`
 }
 
 type RuntimeOutput struct{ Body []ComponentStatus }
