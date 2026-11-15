@@ -160,19 +160,155 @@ func (f *fakeStore) Close() {}
 const testTokenSecret = "test-token-secret"
 
 func seedToken(store *fakeStore, scopes []string) {
+	access := auth.AccessRead
+	if auth.HasScope(scopes, auth.ScopeAdmin) {
+		access = auth.AccessAdmin
+	} else if auth.HasScope(scopes, auth.ScopeControl) {
+		access = auth.AccessControl
+	}
+	seedAccessToken(store, access, []string{"*"})
+}
+
+func seedAccessToken(store *fakeStore, access auth.Access, groups []string) {
 	hash := auth.HashSecret(testTokenSecret)
 	data, _ := json.Marshal(auth.Token{
-		ID:        "test-token",
-		Name:      "Test",
-		Hash:      hash,
-		Scopes:    scopes,
-		CreatedAt: time.Now().UTC(),
+		ID:             "test-token",
+		Name:           "Test",
+		Hash:           hash,
+		Access:         access,
+		SecurityGroups: groups,
+		CreatedAt:      time.Now().UTC(),
+		LastUsedAt:     time.Now().UTC(),
 	})
 	if store.searchResultsByPattern == nil {
 		store.searchResultsByPattern = map[string][]storage.Entry{}
 	}
 	store.searchResultsByPattern["sb-api.tokens.>"] = []storage.Entry{
 		{Key: "sb-api.tokens.test-token", Data: data},
+	}
+}
+
+func securityEntity(plugin, device, id, typ, group string, commands ...string) json.RawMessage {
+	data, _ := json.Marshal(map[string]any{"plugin": plugin, "deviceID": device, "id": id, "type": typ, "name": id, "securityGroup": group, "commands": commands, "state": map[string]any{}})
+	return data
+}
+
+func TestSecurityGroupsFilterEntitiesAndCommands(t *testing.T) {
+	msg, err := messenger.Mock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer msg.Close()
+	media := securityEntity("plugin-test", "server", "player", "media_player", "media", "media_play")
+	lock := securityEntity("plugin-test", "door", "lock", "lock", "security", "lock_unlock")
+	store := &fakeStore{entities: map[string]json.RawMessage{"plugin-test.server.player": media, "plugin-test.door.lock": lock}, searchResultsByPattern: map[string][]storage.Entry{"*.*.*": {{Key: "plugin-test.server.player", Data: media}, {Key: "plugin-test.door.lock", Data: lock}}}}
+	seedAccessToken(store, auth.AccessControl, []string{"media"})
+	srv := httptest.NewServer(New(msg, store))
+	defer srv.Close()
+
+	resp, err := authGet(srv.URL + "/entities")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entities []struct {
+		Key string `json:"key"`
+	}
+	decodeBody(t, resp, &entities)
+	if len(entities) != 1 || entities[0].Key != "plugin-test.server.player" {
+		t.Fatalf("visible entities = %+v", entities)
+	}
+
+	resp, err = authGet(srv.URL + "/entities/plugin-test/door/lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("security entity status = %d", resp.StatusCode)
+	}
+
+	resp, err = authPost(srv.URL+"/entities/plugin-test/door/lock/command/lock_unlock", "application/json", []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("security command status = %d", resp.StatusCode)
+	}
+
+	resp, err = authPost(srv.URL+"/entities/plugin-test/server/player/command/media_play", "application/json", []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("media command status = %d", resp.StatusCode)
+	}
+}
+
+func TestLegacyTokenMigratesWithoutChangingSecret(t *testing.T) {
+	msg, err := messenger.Mock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer msg.Close()
+	legacy, _ := json.Marshal(auth.Token{ID: "test-token", Name: "Legacy", Hash: auth.HashSecret(testTokenSecret), Scopes: []string{"read", "control"}, CreatedAt: time.Now().UTC()})
+	store := &fakeStore{searchResultsByPattern: map[string][]storage.Entry{"sb-api.tokens.>": {{Key: "sb-api.tokens.test-token", Data: legacy}}}}
+	srv := httptest.NewServer(New(msg, store))
+	defer srv.Close()
+	resp, err := authGet(srv.URL + "/devices")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var migrated auth.Token
+	if err := json.Unmarshal(store.savedBody, &migrated); err != nil {
+		t.Fatal(err)
+	}
+	if migrated.Access != auth.AccessControl || len(migrated.SecurityGroups) != 1 || migrated.SecurityGroups[0] != "*" || migrated.Hash != auth.HashSecret(testTokenSecret) {
+		t.Fatalf("migrated = %+v", migrated)
+	}
+}
+
+func TestOpenAPIDocumentsBearerAuthAndSecurityGroups(t *testing.T) {
+	msg, err := messenger.Mock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer msg.Close()
+	store := &fakeStore{}
+	seedToken(store, []string{"read"})
+	srv := httptest.NewServer(New(msg, store))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/openapi.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	decodeBody(t, resp, &document)
+	components := document["components"].(map[string]any)
+	schemes := components["securitySchemes"].(map[string]any)
+	if schemes["bearerAuth"] == nil {
+		t.Fatal("bearerAuth security scheme missing")
+	}
+	paths := document["paths"].(map[string]any)
+	if paths["/auth/security-groups"] == nil {
+		t.Fatal("security group catalog path missing")
+	}
+
+	resp, err = authGet(srv.URL + "/auth/security-groups")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var catalog struct {
+		Groups []domain.SecurityGroupDefinition `json:"groups"`
+	}
+	decodeBody(t, resp, &catalog)
+	if len(catalog.Groups) != 5 {
+		t.Fatalf("groups = %+v", catalog.Groups)
 	}
 }
 
@@ -426,7 +562,7 @@ func TestAuth_BootstrapMode(t *testing.T) {
 
 	// POST /tokens should be allowed (bootstrap).
 	resp, err = http.Post(srv.URL+"/tokens", "application/json",
-		bytes.NewReader([]byte(`{"name":"Admin","scopes":["read","control","write","admin"]}`)))
+		bytes.NewReader([]byte(`{"name":"Admin","access":"admin","securityGroups":["*"]}`)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -793,10 +929,12 @@ func TestWebSocketEvents_StreamSnapshotAndUpdates(t *testing.T) {
 
 	initial := mustJSON(t, map[string]any{
 		"id":    "ent1",
+		"type":  "switch",
 		"state": map[string]any{"power": false},
 	})
 	updated := mustJSON(t, map[string]any{
 		"id":    "ent1",
+		"type":  "switch",
 		"state": map[string]any{"power": true},
 	})
 	store := &fakeStore{
@@ -1025,14 +1163,14 @@ func TestAuth_ControlScope(t *testing.T) {
 		t.Fatal("expected command publish")
 	}
 
-	// Read should fail.
+	// Control access is cumulative and includes reads.
 	resp, err = authGet(srv.URL + "/devices")
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("control-scoped GET /devices: got %d want %d", resp.StatusCode, http.StatusForbidden)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("control-scoped GET /devices: got %d want %d", resp.StatusCode, http.StatusOK)
 	}
 }
 
@@ -1056,8 +1194,8 @@ func TestAuth_QueryIsReadScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("read-scoped POST /query: got %d want %d", resp.StatusCode, http.StatusOK)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("read-scoped POST /query: got %d want %d", resp.StatusCode, http.StatusForbidden)
 	}
 	resp.Body.Close()
 }
@@ -1076,7 +1214,7 @@ func TestAuth_TokenCRUD(t *testing.T) {
 
 	// Create a new token.
 	resp, err := authPost(srv.URL+"/tokens", "application/json",
-		[]byte(`{"name":"Dashboard","scopes":["read"]}`))
+		[]byte(`{"name":"Dashboard","access":"read","securityGroups":["media"]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1136,10 +1274,11 @@ func TestAuth_TokenValidation(t *testing.T) {
 		body       string
 		wantStatus int
 	}{
-		{"missing name", `{"scopes":["read"]}`, http.StatusUnprocessableEntity},
-		{"missing scopes", `{"name":"Test"}`, http.StatusUnprocessableEntity},
-		{"empty scopes", `{"name":"Test","scopes":[]}`, http.StatusUnprocessableEntity},
-		{"invalid scope", `{"name":"Test","scopes":["root"]}`, http.StatusUnprocessableEntity},
+		{"missing name", `{"access":"read","securityGroups":["media"]}`, http.StatusUnprocessableEntity},
+		{"missing access", `{"name":"Test","securityGroups":["media"]}`, http.StatusUnprocessableEntity},
+		{"empty groups", `{"name":"Test","access":"read","securityGroups":[]}`, http.StatusUnprocessableEntity},
+		{"invalid access", `{"name":"Test","access":"root","securityGroups":["media"]}`, http.StatusUnprocessableEntity},
+		{"invalid group", `{"name":"Test","access":"read","securityGroups":["unknown"]}`, http.StatusUnprocessableEntity},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

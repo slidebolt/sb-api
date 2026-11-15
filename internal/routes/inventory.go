@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/slidebolt/sb-api/internal/auth"
 	"github.com/slidebolt/sb-api/internal/inventory"
 	storage "github.com/slidebolt/sb-storage-sdk"
 )
@@ -32,7 +33,19 @@ func RegisterInventory(api huma.API, store storage.Storage) {
 		if err != nil {
 			return nil, huma.Error500InternalServerError("storage search failed", err)
 		}
-		text := inventory.Render(entries, inventory.Options{Scope: in.Scope, State: in.State, Section: in.Section})
+		visible := make([]storage.Entry, 0, len(entries))
+		for _, entry := range entries {
+			data, ok := storedEntity(entry.Key, entry.Data)
+			if !ok {
+				continue
+			}
+			group, _ := auth.ResourceSecurityGroup(data)
+			if auth.AllowsGroup(ctx, group) {
+				entry.Data = data
+				visible = append(visible, entry)
+			}
+		}
+		text := inventory.Render(visible, inventory.Options{Scope: in.Scope, State: in.State, Section: in.Section})
 		return &InventoryOutput{ContentType: "text/plain; charset=utf-8", Body: []byte(text)}, nil
 	})
 }

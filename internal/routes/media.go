@@ -3,11 +3,15 @@ package routes
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/slidebolt/sb-api/internal/auth"
+	domain "github.com/slidebolt/sb-domain"
 	media "github.com/slidebolt/sb-media-sdk"
 	messenger "github.com/slidebolt/sb-messenger-sdk"
+	storage "github.com/slidebolt/sb-storage-sdk"
 )
 
 type catalogInput struct {
@@ -57,9 +61,39 @@ type artworkOutput struct {
 }
 type guideOutput struct{ Body media.GuidePage }
 
-func RegisterMedia(api huma.API, msg messenger.Messenger) {
+func providerAllowed(ctx context.Context, store storage.Storage, provider, server, library string) bool {
+	entries, err := store.Search(provider + "." + server + ".*")
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		data, ok := storedEntity(entry.Key, entry.Data)
+		if !ok {
+			continue
+		}
+		var entity domain.Entity
+		if json.Unmarshal(data, &entity) != nil {
+			continue
+		}
+		if library != "" {
+			state, ok := entity.State.(domain.MediaLibrary)
+			if !ok || state.LibraryID != library {
+				continue
+			}
+		}
+		if auth.AllowsGroup(ctx, entity.SecurityGroup) {
+			return true
+		}
+	}
+	return false
+}
+
+func RegisterMedia(api huma.API, msg messenger.Messenger, store storage.Storage) {
 	client := media.NewClient(msg)
 	huma.Register(api, huma.Operation{Method: "GET", Path: "/media/catalog/{provider}/{server}/{library}", Summary: "Browse or search a media library", Tags: []string{"media"}}, func(ctx context.Context, in *catalogInput) (*catalogOutput, error) {
+		if !providerAllowed(ctx, store, in.Provider, in.ServerID, in.LibraryID) {
+			return nil, huma.Error404NotFound("media library not found")
+		}
 		page, err := client.Browse(in.Provider, media.CatalogRequest{ServerID: in.ServerID, LibraryID: in.LibraryID, ParentID: in.ParentID, Query: in.Query, Kind: in.Kind, Sort: in.Sort, Cursor: in.Cursor, Limit: in.Limit})
 		if err != nil {
 			return nil, huma.Error502BadGateway("media provider unavailable", err)
@@ -71,6 +105,9 @@ func RegisterMedia(api huma.API, msg messenger.Messenger) {
 	})
 
 	huma.Register(api, huma.Operation{Method: "GET", Path: "/media/catalog/{provider}/{server}/{library}/items/{item}", Summary: "Get a media item", Tags: []string{"media"}}, func(ctx context.Context, in *itemInput) (*itemOutput, error) {
+		if !providerAllowed(ctx, store, in.Provider, in.ServerID, in.LibraryID) {
+			return nil, huma.Error404NotFound("media library not found")
+		}
 		page, err := client.Browse(in.Provider, media.CatalogRequest{ServerID: in.ServerID, LibraryID: in.LibraryID, ItemID: in.ItemID, Limit: 1})
 		if err != nil {
 			return nil, huma.Error502BadGateway("media provider unavailable", err)
@@ -85,6 +122,9 @@ func RegisterMedia(api huma.API, msg messenger.Messenger) {
 	})
 
 	huma.Register(api, huma.Operation{Method: "GET", Path: "/media/artwork/{provider}/{server}/{item}/{kind}", Summary: "Get proxied media artwork", Tags: []string{"media"}}, func(ctx context.Context, in *artworkInput) (*artworkOutput, error) {
+		if !providerAllowed(ctx, store, in.Provider, in.ServerID, "") {
+			return nil, huma.Error404NotFound("media item not found")
+		}
 		art, err := client.Artwork(in.Provider, media.ArtworkRequest{ServerID: in.ServerID, ItemID: in.ItemID, Kind: in.Kind})
 		if err != nil {
 			return nil, huma.Error502BadGateway("media provider unavailable", err)
@@ -99,6 +139,9 @@ func RegisterMedia(api huma.API, msg messenger.Messenger) {
 	})
 
 	huma.Register(api, huma.Operation{Method: "GET", Path: "/tv/guide/{provider}/{server}", Summary: "Browse or search a TV guide", Tags: []string{"television"}}, func(ctx context.Context, in *guideInput) (*guideOutput, error) {
+		if !providerAllowed(ctx, store, in.Provider, in.ServerID, "") {
+			return nil, huma.Error404NotFound("television provider not found")
+		}
 		if !in.End.After(in.Start) {
 			return nil, huma.Error422UnprocessableEntity("end must be after start")
 		}

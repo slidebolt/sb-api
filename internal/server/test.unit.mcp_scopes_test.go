@@ -124,19 +124,19 @@ func TestMCPScopes_ReadControlTokenCanActButNotChangeStoredData(t *testing.T) {
 	f := newMCPScopeFixture(t, []string{"read", "control"})
 
 	names := f.toolNames()
-	for _, want := range []string{"list_entities", "get_entity", "send_command", "start_script"} {
+	for _, want := range []string{"list_entities", "get_entity", "send_command"} {
 		if !names[want] {
 			t.Errorf("tools/list: %s should be offered to a read+control token", want)
 		}
 	}
-	for _, hidden := range []string{"save_script", "create_entity", "delete_entity", "save_query"} {
+	for _, hidden := range []string{"start_script", "save_script", "create_entity", "delete_entity", "save_query"} {
 		if names[hidden] {
 			t.Errorf("tools/list: %s should not be offered to a read+control token", hidden)
 		}
 	}
 
 	isErr, text := f.call("save_script", map[string]any{"name": "Evil", "source": "print(1)", "type": "script"})
-	if !isErr || !strings.Contains(text, "scope: write") {
+	if !isErr || !strings.Contains(text, "scope: admin") {
 		t.Fatalf("save_script with read+control: want scope error, got isError=%v text=%q", isErr, text)
 	}
 	if f.store.savedKey != "" {

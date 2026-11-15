@@ -38,19 +38,24 @@ func NewWithLogger(msg messenger.Messenger, store storage.Storage, logger loggin
 	})
 	router.Use(auth.Middleware(store))
 
-	config := huma.DefaultConfig("SlideBolt API", "0.1.0")
-	config.Info.Description = "HTTP and MCP gateway to the SlideBolt runtime."
+	config := huma.DefaultConfig("SlideBolt API", "1.0.31")
+	config.Info.Description = "HTTP and MCP gateway to the SlideBolt runtime. Tokens combine cumulative read, control, or admin access with resource security groups."
+	config.Components.SecuritySchemes = map[string]*huma.SecurityScheme{
+		"bearerAuth": {Type: "http", Scheme: "bearer", BearerFormat: "opaque", Description: "SlideBolt access token."},
+	}
+	config.Security = []map[string][]string{{"bearerAuth": {}}}
 
 	api := humachi.New(router, config)
 
 	routes.RegisterTokens(api, store)
+	routes.RegisterAuth(api)
 	routes.RegisterDevices(api, store)
 	routes.RegisterEntities(api, store, msg, logger)
 	routes.RegisterQuery(api, store)
 	routes.RegisterInventory(api, store)
 	routes.RegisterScripts(api, store, msg, logger)
 	routes.RegisterSchedules(api, store, msg)
-	routes.RegisterMedia(api, msg)
+	routes.RegisterMedia(api, msg, store)
 	routes.RegisterLogs(api, logger)
 	managerURL := os.Getenv("SB_MANAGER_STATUS_URL")
 	if managerURL == "" {

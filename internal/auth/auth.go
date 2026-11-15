@@ -10,17 +10,38 @@ import (
 	"strings"
 	"time"
 
+	domain "github.com/slidebolt/sb-domain"
 	storage "github.com/slidebolt/sb-storage-sdk"
 )
 
 const tokenKeyPrefix = "sb-api.tokens."
 
+type Access string
+
+const (
+	AccessRead    Access = "read"
+	AccessControl Access = "control"
+	AccessAdmin   Access = "admin"
+)
+
+type Scope = Access
+
+const (
+	ScopeRead    = AccessRead
+	ScopeControl = AccessControl
+	ScopeWrite   = AccessAdmin
+	ScopeAdmin   = AccessAdmin
+)
+
 type Token struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Hash      string    `json:"hash"`
-	Scopes    []string  `json:"scopes"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID             string    `json:"id"`
+	Name           string    `json:"name"`
+	Hash           string    `json:"hash"`
+	Access         Access    `json:"access,omitempty"`
+	SecurityGroups []string  `json:"securityGroups,omitempty"`
+	CreatedAt      time.Time `json:"createdAt"`
+	LastUsedAt     time.Time `json:"lastUsedAt,omitempty"`
+	Scopes         []string  `json:"scopes,omitempty"`
 }
 
 func (t Token) Key() string                  { return tokenKeyPrefix + t.ID }
@@ -28,42 +49,76 @@ func (t Token) MarshalJSON() ([]byte, error) { return json.Marshal(tokenAlias(t)
 
 type tokenAlias Token
 
-type Scope string
+func ValidAccess(access string) bool {
+	switch Access(access) {
+	case AccessRead, AccessControl, AccessAdmin:
+		return true
+	}
+	return false
+}
+func ValidScope(scope string) bool { return ValidAccess(scope) || scope == "write" }
 
-const (
-	ScopeRead    Scope = "read"
-	ScopeControl Scope = "control"
-	ScopeWrite   Scope = "write"
-	ScopeAdmin   Scope = "admin"
-)
+func accessRank(access Access) int {
+	switch access {
+	case AccessAdmin:
+		return 3
+	case AccessControl:
+		return 2
+	case AccessRead:
+		return 1
+	}
+	return 0
+}
+func HasAccess(granted, required Access) bool       { return accessRank(granted) >= accessRank(required) }
+func HasScope(scopes []string, required Scope) bool { return HasAccess(legacyAccess(scopes), required) }
 
-var validScopes = map[Scope]bool{
-	ScopeRead:    true,
-	ScopeControl: true,
-	ScopeWrite:   true,
-	ScopeAdmin:   true,
+func legacyAccess(scopes []string) Access {
+	access := Access("")
+	for _, scope := range scopes {
+		switch scope {
+		case "admin", "write":
+			return AccessAdmin
+		case "control":
+			access = AccessControl
+		case "read":
+			if access == "" {
+				access = AccessRead
+			}
+		}
+	}
+	return access
 }
 
-func ValidScope(s string) bool {
-	return validScopes[Scope(s)]
+func normalizeToken(token Token) (Token, bool) {
+	changed := false
+	if !ValidAccess(string(token.Access)) {
+		token.Access = legacyAccess(token.Scopes)
+		if token.Access == "" {
+			token.Access = AccessRead
+		}
+		changed = true
+	}
+	if len(token.SecurityGroups) == 0 {
+		token.SecurityGroups = []string{"*"}
+		changed = true
+	}
+	if token.Scopes != nil {
+		token.Scopes = nil
+		changed = true
+	}
+	return token, changed
 }
 
 func GenerateSecret() (string, error) {
 	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b), nil
+	_, err := rand.Read(b)
+	return hex.EncodeToString(b), err
 }
-
 func GenerateID() (string, error) {
 	b := make([]byte, 8)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b), nil
+	_, err := rand.Read(b)
+	return hex.EncodeToString(b), err
 }
-
 func HashSecret(secret string) string {
 	h := sha256.Sum256([]byte(secret))
 	return hex.EncodeToString(h[:])
@@ -75,12 +130,18 @@ func LoadTokens(store storage.Storage) ([]Token, error) {
 		return nil, err
 	}
 	tokens := make([]Token, 0, len(entries))
-	for _, e := range entries {
-		var t Token
-		if err := json.Unmarshal(e.Data, &t); err != nil {
+	for _, entry := range entries {
+		var token Token
+		if json.Unmarshal(entry.Data, &token) != nil {
 			continue
 		}
-		tokens = append(tokens, t)
+		token, changed := normalizeToken(token)
+		if changed {
+			if err := store.Save(token); err != nil {
+				return nil, err
+			}
+		}
+		tokens = append(tokens, token)
 	}
 	return tokens, nil
 }
@@ -95,121 +156,153 @@ func FindBySecret(tokens []Token, secret string) *Token {
 	return nil
 }
 
-func HasScope(scopes []string, required Scope) bool {
-	for _, s := range scopes {
-		if Scope(s) == required {
-			return true
-		}
+func RequiredAccess(method, path string) Access {
+	if strings.HasPrefix(path, "/tokens") || strings.HasPrefix(path, "/logs") || strings.HasPrefix(path, "/scripts") || strings.HasPrefix(path, "/schedules") || strings.HasPrefix(path, "/phrasebook") || path == "/query" {
+		return AccessAdmin
 	}
-	return false
-}
-
-func RequiredScope(method, path string) Scope {
-	if strings.HasPrefix(path, "/tokens") {
-		return ScopeAdmin
-	}
-	// MCP sends every call as a POST, reads included. Connecting needs read;
-	// each tool then checks its own scope (see mcptools).
 	if path == "/mcp" || strings.HasPrefix(path, "/mcp/") {
-		return ScopeRead
+		return AccessRead
 	}
 	if method == http.MethodGet {
-		return ScopeRead
-	}
-	if method == http.MethodPost && path == "/query" {
-		return ScopeRead
+		return AccessRead
 	}
 	if method == http.MethodPost && strings.Contains(path, "/command/") {
-		return ScopeControl
+		return AccessControl
 	}
-	return ScopeWrite
+	return AccessAdmin
 }
+func RequiredScope(method, path string) Scope { return RequiredAccess(method, path) }
 
 func writeError(w http.ResponseWriter, status int, detail string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]any{
-		"status": status,
-		"title":  http.StatusText(status),
-		"detail": detail,
-	})
+	_ = json.NewEncoder(w).Encode(map[string]any{"status": status, "title": http.StatusText(status), "detail": detail})
 }
-
 func bearerSecret(r *http.Request) string {
 	header := r.Header.Get("Authorization")
 	if strings.HasPrefix(header, "Bearer ") {
 		return strings.TrimPrefix(header, "Bearer ")
 	}
-	if isWebSocketRequest(r) {
+	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
 		return r.URL.Query().Get("access_token")
 	}
 	return ""
 }
 
-func isWebSocketRequest(r *http.Request) bool {
-	return strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
-}
-
 func Middleware(store storage.Storage) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Skip auth for OpenAPI docs and schema endpoints.
-			p := r.URL.Path
-			if strings.HasPrefix(p, "/openapi") || strings.HasPrefix(p, "/docs") || strings.HasPrefix(p, "/schemas") {
+			path := r.URL.Path
+			if strings.HasPrefix(path, "/openapi") || strings.HasPrefix(path, "/docs") || strings.HasPrefix(path, "/schemas") {
 				next.ServeHTTP(w, r)
 				return
 			}
-
 			tokens, err := LoadTokens(store)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "failed to load tokens")
 				return
 			}
-
-			// Bootstrap mode: no tokens exist yet.
 			if len(tokens) == 0 {
-				if r.Method == http.MethodPost && p == "/tokens" {
+				if r.Method == http.MethodPost && path == "/tokens" {
 					next.ServeHTTP(w, r)
 					return
 				}
 				writeError(w, http.StatusForbidden, "no access tokens exist — POST /tokens to bootstrap")
 				return
 			}
-
-			// Require bearer token.
 			secret := bearerSecret(r)
 			if secret == "" {
 				writeError(w, http.StatusUnauthorized, "missing bearer token")
 				return
 			}
-
-			tok := FindBySecret(tokens, secret)
-			if tok == nil {
+			token := FindBySecret(tokens, secret)
+			if token == nil {
 				writeError(w, http.StatusUnauthorized, "invalid token")
 				return
 			}
-
-			required := RequiredScope(r.Method, p)
-			if !HasScope(tok.Scopes, required) {
-				writeError(w, http.StatusForbidden, "token missing required scope: "+string(required))
+			now := time.Now().UTC()
+			if token.LastUsedAt.IsZero() || now.Sub(token.LastUsedAt) >= 5*time.Minute {
+				token.LastUsedAt = now
+				if err := store.Save(*token); err != nil {
+					writeError(w, http.StatusInternalServerError, "failed to update token activity")
+					return
+				}
+			}
+			required := RequiredAccess(r.Method, path)
+			if !HasAccess(token.Access, required) {
+				writeError(w, http.StatusForbidden, "token requires access: "+string(required))
 				return
 			}
-
-			next.ServeHTTP(w, r.WithContext(WithScopes(r.Context(), tok.Scopes)))
+			principal := Principal{TokenID: token.ID, Access: token.Access, SecurityGroups: token.SecurityGroups}
+			next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), principal)))
 		})
 	}
 }
 
-type scopesKey struct{}
+type Principal struct {
+	TokenID        string
+	Access         Access
+	SecurityGroups []string
+}
+type principalKey struct{}
 
-// WithScopes records the scopes of the token that made a request.
+func WithPrincipal(ctx context.Context, principal Principal) context.Context {
+	return context.WithValue(ctx, principalKey{}, principal)
+}
+func PrincipalFromContext(ctx context.Context) (Principal, bool) {
+	principal, ok := ctx.Value(principalKey{}).(Principal)
+	return principal, ok
+}
 func WithScopes(ctx context.Context, scopes []string) context.Context {
-	return context.WithValue(ctx, scopesKey{}, scopes)
+	return WithPrincipal(ctx, Principal{Access: legacyAccess(scopes), SecurityGroups: []string{"*"}})
+}
+func ScopesFromContext(ctx context.Context) ([]string, bool) {
+	principal, ok := PrincipalFromContext(ctx)
+	if !ok {
+		return nil, false
+	}
+	return []string{string(principal.Access)}, true
 }
 
-// ScopesFromContext returns the scopes recorded by WithScopes, and whether
-// there were any. Requests through Middleware always have them.
-func ScopesFromContext(ctx context.Context) ([]string, bool) {
-	scopes, ok := ctx.Value(scopesKey{}).([]string)
-	return scopes, ok
+func AllowsGroup(ctx context.Context, group string) bool {
+	principal, ok := PrincipalFromContext(ctx)
+	if !ok {
+		return true
+	}
+	if group == "" {
+		group = domain.SecurityGroupSystem
+	}
+	for _, allowed := range principal.SecurityGroups {
+		if allowed == "*" || allowed == group {
+			return true
+		}
+	}
+	return false
+}
+
+func AllowsAllGroups(ctx context.Context) bool {
+	principal, ok := PrincipalFromContext(ctx)
+	if !ok {
+		return true
+	}
+	for _, group := range principal.SecurityGroups {
+		if group == "*" {
+			return true
+		}
+	}
+	return false
+}
+
+func ResourceSecurityGroup(data []byte) (string, bool) {
+	var envelope struct {
+		Type          string `json:"type"`
+		SecurityGroup string `json:"securityGroup"`
+	}
+	if json.Unmarshal(data, &envelope) != nil || envelope.Type == "" {
+		return "", false
+	}
+	if envelope.SecurityGroup != "" {
+		return envelope.SecurityGroup, true
+	}
+	return domain.DefaultSecurityGroup(envelope.Type), true
 }

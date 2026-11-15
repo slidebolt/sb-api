@@ -2,8 +2,10 @@ package routes
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
+	domain "github.com/slidebolt/sb-domain"
 	storage "github.com/slidebolt/sb-storage-sdk"
 )
 
@@ -14,6 +16,12 @@ func mergeProfilePatch(store storage.Storage, key storage.Keyed, patch json.RawM
 	}
 	if err := json.Unmarshal(patch, &patchDoc); err != nil {
 		return nil, false, err
+	}
+	if value, exists := patchDoc["securityGroup"]; exists && value != nil {
+		group, ok := value.(string)
+		if !ok || group == "*" || !domain.ValidSecurityGroup(group) {
+			return nil, false, fmt.Errorf("invalid securityGroup")
+		}
 	}
 
 	baseDoc := map[string]any{}

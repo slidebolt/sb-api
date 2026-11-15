@@ -2,10 +2,12 @@ package mcptools
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/slidebolt/sb-api/internal/auth"
+	storage "github.com/slidebolt/sb-storage-sdk"
 )
 
 // toolScopes is the scope each tool needs, matching the REST API: reading
@@ -16,20 +18,20 @@ var toolScopes = map[string]auth.Scope{
 	"get_device":      auth.ScopeRead,
 	"list_entities":   auth.ScopeRead,
 	"get_entity":      auth.ScopeRead,
-	"list_scripts":    auth.ScopeRead,
-	"get_script":      auth.ScopeRead,
-	"list_queries":    auth.ScopeRead,
-	"get_query":       auth.ScopeRead,
-	"list_logs":       auth.ScopeRead,
-	"get_log":         auth.ScopeRead,
+	"list_scripts":    auth.ScopeAdmin,
+	"get_script":      auth.ScopeAdmin,
+	"list_queries":    auth.ScopeAdmin,
+	"get_query":       auth.ScopeAdmin,
+	"list_logs":       auth.ScopeAdmin,
+	"get_log":         auth.ScopeAdmin,
 	"get_inventory":   auth.ScopeRead,
-	"phrase_lookup":   auth.ScopeRead,
+	"phrase_lookup":   auth.ScopeAdmin,
 	"browse_tv_guide": auth.ScopeRead,
 
 	"send_command":      auth.ScopeControl,
-	"start_script":      auth.ScopeControl,
-	"stop_script":       auth.ScopeControl,
-	"phrase_correct":    auth.ScopeControl,
+	"start_script":      auth.ScopeAdmin,
+	"stop_script":       auth.ScopeAdmin,
+	"phrase_correct":    auth.ScopeAdmin,
 	"record_tv_program": auth.ScopeControl,
 
 	"create_device":   auth.ScopeWrite,
@@ -76,4 +78,67 @@ func visibleTools(ctx context.Context, tools []mcp.Tool) []mcp.Tool {
 		}
 	}
 	return out
+}
+
+func allowedResource(ctx context.Context, data []byte) bool {
+	group, ok := auth.ResourceSecurityGroup(data)
+	return (ok && auth.AllowsGroup(ctx, group)) || (!ok && auth.AllowsAllGroups(ctx))
+}
+
+func filterAllowedEntries(ctx context.Context, entries []storage.Entry) []storage.Entry {
+	out := make([]storage.Entry, 0, len(entries))
+	for _, entry := range entries {
+		if allowedResource(ctx, entry.Data) {
+			var envelope map[string]any
+			if json.Unmarshal(entry.Data, &envelope) == nil {
+				if _, exists := envelope["securityGroup"]; !exists {
+					group, _ := auth.ResourceSecurityGroup(entry.Data)
+					envelope["securityGroup"] = group
+					entry.Data, _ = json.Marshal(envelope)
+				}
+			}
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+func allowedDevice(ctx context.Context, store storage.Storage, data []byte) bool {
+	var device struct {
+		Plugin        string `json:"plugin"`
+		ID            string `json:"id"`
+		SecurityGroup string `json:"securityGroup"`
+	}
+	if json.Unmarshal(data, &device) != nil || device.Plugin == "" || device.ID == "" {
+		return false
+	}
+	if device.SecurityGroup != "" {
+		return auth.AllowsGroup(ctx, device.SecurityGroup)
+	}
+	entries, err := store.Search(device.Plugin + "." + device.ID + ".*")
+	if err != nil {
+		return false
+	}
+	return len(filterAllowedEntries(ctx, entries)) > 0 || auth.AllowsGroup(ctx, "system")
+}
+
+func projectDevice(ctx context.Context, data []byte) []byte {
+	var device map[string]any
+	if json.Unmarshal(data, &device) != nil {
+		return data
+	}
+	values, ok := device["entities"].([]any)
+	if !ok {
+		return data
+	}
+	visible := make([]any, 0, len(values))
+	for _, value := range values {
+		encoded, _ := json.Marshal(value)
+		if allowedResource(ctx, encoded) {
+			visible = append(visible, value)
+		}
+	}
+	device["entities"] = visible
+	projected, _ := json.Marshal(device)
+	return projected
 }

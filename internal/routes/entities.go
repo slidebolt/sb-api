@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/slidebolt/sb-api/internal/auth"
 	"github.com/slidebolt/sb-api/internal/commands"
 	apitrc "github.com/slidebolt/sb-api/internal/trace"
 	domain "github.com/slidebolt/sb-domain"
@@ -18,6 +19,9 @@ import (
 // entity if any are present, or nil if none are set.
 func extractProfileFields(ent domain.Entity) json.RawMessage {
 	profile := make(map[string]any)
+	if ent.SecurityGroup != "" {
+		profile["securityGroup"] = ent.SecurityGroup
+	}
 	if len(ent.Labels) > 0 {
 		profile["labels"] = ent.Labels
 	}
@@ -62,10 +66,18 @@ func storedEntity(key string, data []byte) (json.RawMessage, bool) {
 	if len(parts) != 3 {
 		return nil, false
 	}
-	if _, err := validateEntityBody(data, EntityKey{Plugin: parts[0], DeviceID: parts[1], EntityID: parts[2]}); err != nil {
+	entity, err := validateEntityBody(data, EntityKey{Plugin: parts[0], DeviceID: parts[1], EntityID: parts[2]})
+	if err != nil {
 		return nil, false
 	}
-	return json.RawMessage(data), true
+	if entity.SecurityGroup == "" {
+		entity.SecurityGroup = domain.DefaultSecurityGroup(entity.Type)
+	}
+	normalized, err := json.Marshal(entity)
+	if err != nil {
+		return nil, false
+	}
+	return json.RawMessage(normalized), true
 }
 
 func (k EntityKey) Key() string { return k.Plugin + "." + k.DeviceID + "." + k.EntityID }
@@ -100,7 +112,10 @@ func RegisterEntities(api huma.API, store storage.Storage, msg messenger.Messeng
 		out := make([]EntityEntry, 0, len(entries))
 		for _, e := range entries {
 			if data, ok := storedEntity(e.Key, e.Data); ok {
-				out = append(out, EntityEntry{Key: e.Key, Data: data})
+				group, _ := auth.ResourceSecurityGroup(data)
+				if auth.AllowsGroup(ctx, group) {
+					out = append(out, EntityEntry{Key: e.Key, Data: data})
+				}
 			}
 		}
 		return &EntitiesOutput{Body: out}, nil
@@ -119,7 +134,8 @@ func RegisterEntities(api huma.API, store storage.Storage, msg messenger.Messeng
 			return nil, huma.Error404NotFound("entity not found")
 		}
 		entity, ok := storedEntity(input.EntityKey.Key(), data)
-		if !ok {
+		group, _ := auth.ResourceSecurityGroup(entity)
+		if !ok || !auth.AllowsGroup(ctx, group) {
 			return nil, huma.Error404NotFound("entity not found")
 		}
 		return &EntityOutput{Body: entity}, nil
@@ -204,6 +220,15 @@ func RegisterEntities(api huma.API, store storage.Storage, msg messenger.Messeng
 		ctx, traceID := apitrc.Ensure(ctx)
 		subject := input.Plugin + "." + input.DeviceID + "." + input.EntityID + ".command." + input.Action
 		target := input.Plugin + "." + input.DeviceID + "." + input.EntityID
+		data, err := store.Get(EntityKey{Plugin: input.Plugin, DeviceID: input.DeviceID, EntityID: input.EntityID})
+		if err != nil {
+			return nil, huma.Error404NotFound("entity not found")
+		}
+		entity, ok := storedEntity(target, data)
+		group, _ := auth.ResourceSecurityGroup(entity)
+		if !ok || !auth.AllowsGroup(ctx, group) {
+			return nil, huma.Error404NotFound("entity not found")
+		}
 		apitrc.AppendLog(ctx, logger, "sb-api", "api.command.request.received", "info", "API received entity command", traceID, map[string]any{
 			"subject": subject,
 			"plugin":  input.Plugin,

@@ -17,12 +17,13 @@ import (
 )
 
 type SerializedDefinition struct {
-	Type        string          `json:"type"`
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	Schema      json.RawMessage `json:"schema"`
-	LiveCount   int             `json:"liveCount"`
-	Producers   []string        `json:"producers,omitempty"`
+	Type          string          `json:"type"`
+	Name          string          `json:"name"`
+	Description   string          `json:"description"`
+	SecurityGroup string          `json:"securityGroup,omitempty"`
+	Schema        json.RawMessage `json:"schema"`
+	LiveCount     int             `json:"liveCount"`
+	Producers     []string        `json:"producers,omitempty"`
 }
 
 type DomainCatalog struct {
@@ -77,7 +78,7 @@ func RegisterDefinitions(api huma.API, store storage.Storage, managerURL string)
 		entityIndex := make(map[string]int, len(entityDefs))
 		for _, def := range entityDefs {
 			entityIndex[def.Type] = len(body.Domain.EntityTypes)
-			body.Domain.EntityTypes = append(body.Domain.EntityTypes, SerializedDefinition{Type: def.Type, Name: def.Name, Description: def.Description, Schema: schemaFor(reflect.New(def.GoType).Elem().Interface())})
+			body.Domain.EntityTypes = append(body.Domain.EntityTypes, SerializedDefinition{Type: def.Type, Name: def.Name, Description: def.Description, SecurityGroup: def.SecurityGroup, Schema: schemaFor(reflect.New(def.GoType).Elem().Interface())})
 		}
 		commandDefs := domain.CommandDefinitions()
 		commandKnown := make(map[string]struct{}, len(commandDefs))

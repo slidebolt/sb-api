@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/slidebolt/sb-api/internal/auth"
 	domain "github.com/slidebolt/sb-domain"
 	storage "github.com/slidebolt/sb-storage-sdk"
 )
@@ -33,6 +34,9 @@ type DeviceInput struct {
 // the device if any are present, or nil if none are set.
 func extractDeviceProfileFields(dev domain.Device) json.RawMessage {
 	profile := make(map[string]any)
+	if dev.SecurityGroup != "" {
+		profile["securityGroup"] = dev.SecurityGroup
+	}
 	if len(dev.Labels) > 0 {
 		profile["labels"] = dev.Labels
 	}
@@ -70,6 +74,38 @@ func storedDevice(key string, data []byte) (json.RawMessage, bool) {
 	return json.RawMessage(data), true
 }
 
+func deviceAllowed(ctx context.Context, store storage.Storage, device domain.Device) bool {
+	if device.SecurityGroup != "" {
+		return auth.AllowsGroup(ctx, device.SecurityGroup)
+	}
+	entries, err := store.Search(device.Plugin + "." + device.ID + ".*")
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if data, ok := storedEntity(entry.Key, entry.Data); ok {
+			group, _ := auth.ResourceSecurityGroup(data)
+			if auth.AllowsGroup(ctx, group) {
+				return true
+			}
+		}
+	}
+	return auth.AllowsGroup(ctx, domain.SecurityGroupSystem)
+}
+
+func filterDeviceEntities(ctx context.Context, device *domain.Device) {
+	filtered := make([]domain.Entity, 0, len(device.Entities))
+	for _, entity := range device.Entities {
+		if entity.SecurityGroup == "" {
+			entity.SecurityGroup = domain.DefaultSecurityGroup(entity.Type)
+		}
+		if auth.AllowsGroup(ctx, entity.SecurityGroup) {
+			filtered = append(filtered, entity)
+		}
+	}
+	device.Entities = filtered
+}
+
 // rawKeyed wraps a key + raw JSON so it satisfies storage.Keyed.
 type rawKeyed struct {
 	key  string
@@ -94,7 +130,13 @@ func RegisterDevices(api huma.API, store storage.Storage) {
 		out := make([]DeviceEntry, 0, len(entries))
 		for _, e := range entries {
 			if data, ok := storedDevice(e.Key, e.Data); ok {
-				out = append(out, DeviceEntry{Key: e.Key, Data: data})
+				var device domain.Device
+				_ = json.Unmarshal(data, &device)
+				if deviceAllowed(ctx, store, device) {
+					filterDeviceEntities(ctx, &device)
+					projected, _ := json.Marshal(device)
+					out = append(out, DeviceEntry{Key: e.Key, Data: projected})
+				}
 			}
 		}
 		return &DevicesOutput{Body: out}, nil
@@ -113,10 +155,14 @@ func RegisterDevices(api huma.API, store storage.Storage) {
 			return nil, huma.Error404NotFound("device not found")
 		}
 		device, ok := storedDevice(input.DeviceKey.Key(), data)
-		if !ok {
+		var decoded domain.Device
+		_ = json.Unmarshal(device, &decoded)
+		if !ok || !deviceAllowed(ctx, store, decoded) {
 			return nil, huma.Error404NotFound("device not found")
 		}
-		return &DeviceOutput{Body: device}, nil
+		filterDeviceEntities(ctx, &decoded)
+		projected, _ := json.Marshal(decoded)
+		return &DeviceOutput{Body: projected}, nil
 	})
 
 	huma.Register(api, huma.Operation{

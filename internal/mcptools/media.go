@@ -37,6 +37,9 @@ func registerMediaTools(s *server.MCPServer, store storage.Storage, msg messenge
 		if provider == "" || serverID == "" {
 			return mcp.NewToolResultError("provider and server are required"), nil
 		}
+		if !mcpProviderAllowed(ctx, store, provider, serverID) {
+			return mcp.NewToolResultError("television provider not found"), nil
+		}
 		now := time.Now()
 		start, err := optionalTime(req.GetString("start", ""), now.Add(-5*time.Minute))
 		if err != nil {
@@ -82,6 +85,9 @@ func registerMediaTools(s *server.MCPServer, store storage.Storage, msg messenge
 		if provider == "" || serverID == "" || airingID == "" {
 			return mcp.NewToolResultError("provider, server, and airing_id are required"), nil
 		}
+		if !mcpProviderAllowed(ctx, store, provider, serverID) {
+			return mcp.NewToolResultError("recorder not found"), nil
+		}
 		recorder, err := findRecorder(store, provider, serverID)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
@@ -102,6 +108,19 @@ func registerMediaTools(s *server.MCPServer, store storage.Storage, msg messenge
 		}
 		return mcp.NewToolResultText("sent but not yet confirmed: the recorder accepted the request but no matching schedule appeared within 5 seconds"), nil
 	})
+}
+
+func mcpProviderAllowed(ctx context.Context, store storage.Storage, provider, server string) bool {
+	entries, err := store.Search(provider + "." + server + ".*")
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if allowedResource(ctx, entry.Data) {
+			return true
+		}
+	}
+	return false
 }
 
 func optionalTime(raw string, fallback time.Time) (time.Time, error) {

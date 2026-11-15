@@ -82,7 +82,14 @@ Queries are named, reusable search definitions stored under sb-query.queries.* a
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
 		}
-		out, _ := json.Marshal(entries)
+		visible := make([]storage.Entry, 0, len(entries))
+		for _, entry := range entries {
+			if allowedDevice(ctx, store, entry.Data) {
+				entry.Data = projectDevice(ctx, entry.Data)
+				visible = append(visible, entry)
+			}
+		}
+		out, _ := json.Marshal(visible)
 		return mcp.NewToolResultText(string(out)), nil
 	})
 
@@ -159,7 +166,10 @@ Queries are named, reusable search definitions stored under sb-query.queries.* a
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("get failed: %v", err)), nil
 		}
-		out := map[string]any{"key": key, "data": json.RawMessage(data)}
+		if !allowedDevice(ctx, store, data) {
+			return mcp.NewToolResultError("device not found"), nil
+		}
+		out := map[string]any{"key": key, "data": json.RawMessage(projectDevice(ctx, data))}
 		result, _ := json.Marshal(out)
 		return mcp.NewToolResultText(string(result)), nil
 	})
@@ -181,7 +191,7 @@ Queries are named, reusable search definitions stored under sb-query.queries.* a
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
 		}
-		return mcp.NewToolResultText(inventory.Render(entries, inventory.Options{
+		return mcp.NewToolResultText(inventory.Render(filterAllowedEntries(ctx, entries), inventory.Options{
 			Scope:   req.GetString("scope", ""),
 			State:   req.GetBool("state", false),
 			Section: req.GetString("section", ""),
@@ -204,6 +214,7 @@ Queries are named, reusable search definitions stored under sb-query.queries.* a
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
 		}
+		entries = filterAllowedEntries(ctx, entries)
 		f := entityFilter{
 			Type:   req.GetString("type", ""),
 			Plugin: req.GetString("plugin", ""),
@@ -238,6 +249,9 @@ Queries are named, reusable search definitions stored under sb-query.queries.* a
 		data, err := store.Get(rawKeyed{key: key})
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("get failed: %v", err)), nil
+		}
+		if !allowedResource(ctx, data) {
+			return mcp.NewToolResultError("entity not found"), nil
 		}
 		out := map[string]any{"key": key, "data": json.RawMessage(data)}
 		result, _ := json.Marshal(out)
@@ -623,6 +637,11 @@ Queries are named, reusable search definitions stored under sb-query.queries.* a
 		mcp.WithString("payload", mcp.Description(`Optional JSON command payload, e.g. {"brightness":127} (brightness is 0-254)`)),
 		mcp.WithString("request", mcp.Description("The person's words this command answers, e.g. \"set the basement lights to 50%\"")),
 	), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		key := req.GetString("plugin", "") + "." + req.GetString("device", "") + "." + req.GetString("entity", "")
+		data, err := store.Get(rawKeyed{key: key})
+		if err != nil || !allowedResource(ctx, data) {
+			return mcp.NewToolResultError("entity not found"), nil
+		}
 		payload := strings.TrimSpace(req.GetString("payload", ""))
 		if payload == "" {
 			payload = "{}"

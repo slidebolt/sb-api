@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/gorilla/websocket"
+	"github.com/slidebolt/sb-api/internal/auth"
 
 	messenger "github.com/slidebolt/sb-messenger-sdk"
 	storage "github.com/slidebolt/sb-storage-sdk"
@@ -45,10 +46,17 @@ func webSocketEvents(store storage.Storage, msg messenger.Messenger) http.Handle
 			})
 			return
 		}
+		visible := make([]storage.Entry, 0, len(entries))
+		for _, entry := range entries {
+			group, ok := auth.ResourceSecurityGroup(entry.Data)
+			if ok && auth.AllowsGroup(r.Context(), group) {
+				visible = append(visible, entry)
+			}
+		}
 		if err := writeWebSocketMessage(conn, wsEventsMessage{
 			Type:    "snapshot",
 			Pattern: pattern,
-			Items:   entries,
+			Items:   visible,
 		}); err != nil {
 			return
 		}
@@ -56,13 +64,22 @@ func webSocketEvents(store storage.Storage, msg messenger.Messenger) http.Handle
 		events := make(chan wsEventsMessage, 32)
 		watcher, err := storage.Watch(msg, storage.Query{Pattern: pattern}, storage.WatchHandlers{
 			OnAdd: func(key string, data json.RawMessage) {
-				events <- wsEventsMessage{Type: "upsert", Key: key, Data: data}
+				group, ok := auth.ResourceSecurityGroup(data)
+				if ok && auth.AllowsGroup(r.Context(), group) {
+					events <- wsEventsMessage{Type: "upsert", Key: key, Data: data}
+				}
 			},
 			OnUpdate: func(key string, data json.RawMessage) {
-				events <- wsEventsMessage{Type: "upsert", Key: key, Data: data}
+				group, ok := auth.ResourceSecurityGroup(data)
+				if ok && auth.AllowsGroup(r.Context(), group) {
+					events <- wsEventsMessage{Type: "upsert", Key: key, Data: data}
+				}
 			},
 			OnRemove: func(key string, data json.RawMessage) {
-				events <- wsEventsMessage{Type: "remove", Key: key, Data: data}
+				group, ok := auth.ResourceSecurityGroup(data)
+				if ok && auth.AllowsGroup(r.Context(), group) {
+					events <- wsEventsMessage{Type: "remove", Key: key, Data: data}
+				}
 			},
 		})
 		if err != nil {
