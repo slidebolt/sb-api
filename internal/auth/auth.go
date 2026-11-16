@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	domain "github.com/slidebolt/sb-domain"
@@ -157,7 +159,7 @@ func FindBySecret(tokens []Token, secret string) *Token {
 }
 
 func RequiredAccess(method, path string) Access {
-	if strings.HasPrefix(path, "/tokens") || strings.HasPrefix(path, "/logs") || strings.HasPrefix(path, "/scripts") || strings.HasPrefix(path, "/schedules") || strings.HasPrefix(path, "/phrasebook") || path == "/query" {
+	if strings.HasPrefix(path, "/tokens") || strings.HasPrefix(path, "/pairing/requests") || strings.HasPrefix(path, "/logs") || strings.HasPrefix(path, "/scripts") || strings.HasPrefix(path, "/schedules") || strings.HasPrefix(path, "/phrasebook") || path == "/query" {
 		return AccessAdmin
 	}
 	if path == "/mcp" || strings.HasPrefix(path, "/mcp/") {
@@ -193,7 +195,11 @@ func Middleware(store storage.Storage) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			path := r.URL.Path
-			if strings.HasPrefix(path, "/openapi") || strings.HasPrefix(path, "/docs") || strings.HasPrefix(path, "/schemas") {
+			if publicRequest(r.Method, path) {
+				if strings.HasPrefix(path, "/pairing/requests") && !allowPairingRequest(r) {
+					writeError(w, http.StatusTooManyRequests, "pairing rate limit exceeded")
+					return
+				}
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -237,6 +243,46 @@ func Middleware(store storage.Storage) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), principal)))
 		})
 	}
+}
+
+type rateWindow struct {
+	Started time.Time
+	Count   int
+}
+
+var pairingRate = struct {
+	sync.Mutex
+	Entries map[string]rateWindow
+}{Entries: map[string]rateWindow{}}
+
+func allowPairingRequest(r *http.Request) bool {
+	key := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0])
+	if key == "" {
+		key, _, _ = net.SplitHostPort(r.RemoteAddr)
+	}
+	if key == "" {
+		key = "unknown"
+	}
+	now := time.Now()
+	pairingRate.Lock()
+	defer pairingRate.Unlock()
+	w := pairingRate.Entries[key]
+	if w.Started.IsZero() || now.Sub(w.Started) >= time.Minute {
+		w = rateWindow{Started: now}
+	}
+	w.Count++
+	pairingRate.Entries[key] = w
+	return w.Count <= 30
+}
+
+func publicRequest(method, path string) bool {
+	if strings.HasPrefix(path, "/openapi") || strings.HasPrefix(path, "/docs") || strings.HasPrefix(path, "/schemas") || path == "/.well-known/slidebolt" {
+		return true
+	}
+	if method == http.MethodPost && (path == "/pairing/requests" || strings.HasSuffix(path, "/exchange") && strings.HasPrefix(path, "/pairing/requests/")) {
+		return true
+	}
+	return false
 }
 
 type Principal struct {

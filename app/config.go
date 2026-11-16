@@ -9,6 +9,9 @@ import (
 type Config struct {
 	ListenAddr string
 	HTTPURL    string
+	PublicURL  string
+	SystemID   string
+	SystemName string
 }
 
 func DefaultConfig() Config {
@@ -28,5 +31,8 @@ func DefaultConfig() Config {
 	return Config{
 		ListenAddr: listenAddr,
 		HTTPURL:    httpURL,
+		PublicURL:  os.Getenv("SB_API_PUBLIC_URL"),
+		SystemID:   os.Getenv("SYSTEM_UUID"),
+		SystemName: os.Getenv("SB_SYSTEM_NAME"),
 	}
 }

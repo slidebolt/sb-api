@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
@@ -40,6 +41,9 @@ func NewWithLogger(msg messenger.Messenger, store storage.Storage, logger loggin
 
 	config := huma.DefaultConfig("SlideBolt API", "1.0.33")
 	config.Info.Description = "HTTP and MCP gateway to the SlideBolt runtime. Tokens combine cumulative read, control, or admin access with resource security groups."
+	if publicURL := strings.TrimRight(os.Getenv("SB_API_PUBLIC_URL"), "/"); publicURL != "" {
+		config.Servers = []*huma.Server{{URL: publicURL, Description: "Paired client API"}}
+	}
 	config.Components.SecuritySchemes = map[string]*huma.SecurityScheme{
 		"bearerAuth": {Type: "http", Scheme: "bearer", BearerFormat: "opaque", Description: "SlideBolt access token."},
 	}
@@ -49,6 +53,10 @@ func NewWithLogger(msg messenger.Messenger, store storage.Storage, logger loggin
 
 	routes.RegisterTokens(api, store)
 	routes.RegisterAuth(api)
+	routes.RegisterPairing(api, store, routes.PairingConfig{
+		PublicURL: strings.TrimRight(os.Getenv("SB_API_PUBLIC_URL"), "/"),
+		SystemID:  os.Getenv("SYSTEM_UUID"), SystemName: os.Getenv("SB_SYSTEM_NAME"),
+	})
 	routes.RegisterDevices(api, store)
 	routes.RegisterEntities(api, store, msg, logger)
 	routes.RegisterQuery(api, store)

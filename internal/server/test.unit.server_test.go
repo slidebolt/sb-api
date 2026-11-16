@@ -319,6 +319,7 @@ func TestLegacyTokenMigratesWithoutChangingSecret(t *testing.T) {
 }
 
 func TestOpenAPIDocumentsBearerAuthAndSecurityGroups(t *testing.T) {
+	t.Setenv("SB_API_PUBLIC_URL", "https://slidebolt.example/core")
 	msg, err := messenger.Mock()
 	if err != nil {
 		t.Fatal(err)
@@ -342,6 +343,15 @@ func TestOpenAPIDocumentsBearerAuthAndSecurityGroups(t *testing.T) {
 	paths := document["paths"].(map[string]any)
 	if paths["/auth/security-groups"] == nil {
 		t.Fatal("security group catalog path missing")
+	}
+	for _, path := range []string{"/.well-known/slidebolt", "/pairing/requests", "/pairing/requests/{id}/exchange"} {
+		if paths[path] == nil {
+			t.Fatalf("pairing path missing: %s", path)
+		}
+	}
+	servers := document["servers"].([]any)
+	if len(servers) != 1 || servers[0].(map[string]any)["url"] != "https://slidebolt.example/core" {
+		t.Fatalf("servers = %+v", servers)
 	}
 
 	resp, err = authGet(srv.URL + "/auth/security-groups")

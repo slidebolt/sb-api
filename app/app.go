@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 
+	"github.com/grandcat/zeroconf"
 	contract "github.com/slidebolt/sb-contract"
 	messenger "github.com/slidebolt/sb-messenger-sdk"
 	storage "github.com/slidebolt/sb-storage-sdk"
@@ -15,11 +18,12 @@ import (
 )
 
 type App struct {
-	cfg      Config
-	msg      messenger.Messenger
-	store    storage.Storage
-	httpSv   *http.Server
-	listener net.Listener
+	cfg       Config
+	msg       messenger.Messenger
+	store     storage.Storage
+	httpSv    *http.Server
+	listener  net.Listener
+	discovery *zeroconf.Server
 }
 
 func New(cfg Config) *App {
@@ -35,7 +39,7 @@ func (a *App) Hello() contract.HelloResponse {
 			contract.SetupField{Key: "port", Environment: "SB_API_PORT", Name: "API port", Description: "Local HTTP port used by the SlideBolt API.", Control: contract.SetupText, Generate: "free_port"},
 			contract.SetupField{Key: "manager_status_url", Environment: "SB_MANAGER_STATUS_URL", Name: "Manager status URL", Description: "Internal manager health endpoint used to report component state.", Control: contract.SetupText, Advanced: true},
 		),
-		DependsOn:       []string{"messenger", "storage", "scheduler"},
+		DependsOn: []string{"messenger", "storage", "scheduler"},
 	}
 }
 
@@ -69,6 +73,7 @@ func (a *App) OnStart(deps map[string]json.RawMessage) (json.RawMessage, error) 
 		return nil, fmt.Errorf("listen %s: %w", a.cfg.ListenAddr, err)
 	}
 	a.listener = ln
+	a.startDiscovery()
 
 	go func() {
 		if err := a.httpSv.Serve(ln); err != nil && err != http.ErrServerClosed {
@@ -84,7 +89,35 @@ func (a *App) OnStart(deps map[string]json.RawMessage) (json.RawMessage, error) 
 	return payload, nil
 }
 
+func (a *App) startDiscovery() {
+	if strings.TrimSpace(a.cfg.PublicURL) == "" {
+		return
+	}
+	u, err := url.Parse(a.cfg.PublicURL)
+	if err != nil || u.Hostname() == "" {
+		return
+	}
+	port := 443
+	if u.Port() != "" {
+		if _, err := fmt.Sscanf(u.Port(), "%d", &port); err != nil {
+			return
+		}
+	}
+	name := strings.TrimSpace(a.cfg.SystemName)
+	if name == "" {
+		name = "SlideBolt"
+	}
+	txt := []string{"id=" + a.cfg.SystemID, "api=" + a.cfg.PublicURL, "version=1.0.33", "path=" + u.Path}
+	server, err := zeroconf.Register(name, "_slidebolt._tcp", "local.", port, txt, nil)
+	if err == nil {
+		a.discovery = server
+	}
+}
+
 func (a *App) OnShutdown() error {
+	if a.discovery != nil {
+		a.discovery.Shutdown()
+	}
 	if a.httpSv != nil {
 		a.httpSv.Shutdown(context.Background())
 	}
