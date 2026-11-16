@@ -38,7 +38,7 @@ func NewWithLogger(msg messenger.Messenger, store storage.Storage, logger loggin
 	})
 	router.Use(auth.Middleware(store))
 
-	config := huma.DefaultConfig("SlideBolt API", "1.0.31")
+	config := huma.DefaultConfig("SlideBolt API", "1.0.32")
 	config.Info.Description = "HTTP and MCP gateway to the SlideBolt runtime. Tokens combine cumulative read, control, or admin access with resource security groups."
 	config.Components.SecuritySchemes = map[string]*huma.SecurityScheme{
 		"bearerAuth": {Type: "http", Scheme: "bearer", BearerFormat: "opaque", Description: "SlideBolt access token."},
@@ -77,8 +77,8 @@ func NewWithLogger(msg messenger.Messenger, store storage.Storage, logger loggin
 		if traceID == "" {
 			_, traceID = apitrc.WithRequestTrace(r)
 		}
-		if scopes, ok := auth.ScopesFromContext(r.Context()); ok {
-			ctx = auth.WithScopes(ctx, scopes)
+		if principal, ok := auth.PrincipalFromContext(r.Context()); ok {
+			ctx = auth.WithPrincipal(ctx, principal)
 		}
 		return apitrc.WithContext(ctx, traceID)
 	})))

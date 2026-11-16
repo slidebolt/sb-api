@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	logcfg "github.com/slidebolt/sb-logging"
 	logserver "github.com/slidebolt/sb-logging/server"
 	messenger "github.com/slidebolt/sb-messenger-sdk"
+	storage "github.com/slidebolt/sb-storage-sdk"
 
 	"github.com/slidebolt/sb-api/internal/auth"
 )
@@ -27,13 +29,23 @@ type mcpScopeFixture struct {
 // newMCPScopeFixture starts the API with one token holding the given scopes and
 // opens an MCP session with it.
 func newMCPScopeFixture(t *testing.T, scopes []string) *mcpScopeFixture {
+	access := auth.AccessRead
+	if auth.HasScope(scopes, auth.ScopeAdmin) {
+		access = auth.AccessAdmin
+	} else if auth.HasScope(scopes, auth.ScopeControl) {
+		access = auth.AccessControl
+	}
+	return newMCPAccessFixture(t, access, []string{"*"})
+}
+
+func newMCPAccessFixture(t *testing.T, access auth.Access, groups []string) *mcpScopeFixture {
 	t.Helper()
 	msg, err := messenger.Mock()
 	if err != nil {
 		t.Fatal(err)
 	}
 	store := &fakeStore{}
-	seedToken(store, scopes)
+	seedAccessToken(store, access, groups)
 	seedEntity(store, "plugin-virtual.dev1.lamp", "light_turn_on", "light_turn_off")
 	logSvc, err := logserver.New(logcfg.Config{Target: "memory"})
 	if err != nil {
@@ -61,10 +73,33 @@ func newMCPScopeFixture(t *testing.T, scopes []string) *mcpScopeFixture {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("initialize with scopes %v: status %d body=%s", scopes, resp.StatusCode, body)
+		t.Fatalf("initialize with access %s groups %v: status %d body=%s", access, groups, resp.StatusCode, body)
 	}
 	f.session = resp.Header.Get(mcpsrv.HeaderKeySessionID)
 	return f
+}
+
+func TestMCPSecurityGroupsPreserveHTTPPrincipal(t *testing.T) {
+	f := newMCPAccessFixture(t, auth.AccessRead, []string{"media"})
+	media := securityEntity("plugin-test", "server", "player", "media_player", "media")
+	lock := securityEntity("plugin-test", "door", "lock", "lock", "security")
+	f.store.entities = map[string]json.RawMessage{
+		"plugin-test.server.player": media,
+		"plugin-test.door.lock":     lock,
+	}
+	f.store.searchResultsByPattern["*.*.*"] = []storage.Entry{
+		{Key: "plugin-test.server.player", Data: media},
+		{Key: "plugin-test.door.lock", Data: lock},
+	}
+
+	isErr, listed := f.call("list_entities", map[string]any{})
+	if isErr || !strings.Contains(listed, "plugin-test.server.player") || strings.Contains(listed, "plugin-test.door.lock") {
+		t.Fatalf("media-only list_entities: error=%v result=%s", isErr, listed)
+	}
+	isErr, text := f.call("get_entity", map[string]any{"plugin": "plugin-test", "device": "door", "entity": "lock"})
+	if !isErr || !strings.Contains(text, "not found") {
+		t.Fatalf("media-only get security entity: error=%v result=%s", isErr, text)
+	}
 }
 
 func (f *mcpScopeFixture) toolNames() map[string]bool {
