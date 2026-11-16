@@ -6,6 +6,7 @@ require (
 	github.com/danielgtaylor/huma/v2 v2.37.2
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/gorilla/websocket v1.5.3
+	github.com/grandcat/zeroconf v1.0.0
 	github.com/invopop/jsonschema v0.13.0
 	github.com/mark3labs/mcp-go v0.45.0
 	github.com/slidebolt/sb-contract v1.0.15
@@ -28,7 +29,6 @@ require (
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/go-tpm v0.9.8 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/grandcat/zeroconf v1.0.0 // indirect
 	github.com/klauspost/compress v1.18.4 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect

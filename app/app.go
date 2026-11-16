@@ -110,10 +110,46 @@ func (a *App) startDiscovery() {
 		name = "SlideBolt"
 	}
 	txt := []string{"id=" + a.cfg.SystemID, "api=" + a.cfg.PublicURL, "version=1.0.33", "path=" + u.Path}
-	server, err := zeroconf.Register(name, discoveryService, "local.", port, txt, nil)
+	server, err := zeroconf.Register(name, discoveryService, "local.", port, txt, outboundInterfaces())
 	if err == nil {
 		a.discovery = server
 	}
+}
+
+// outboundInterfaces limits DNS-SD to the interface carrying the default
+// route. Without this, zeroconf also publishes Docker bridge addresses that
+// are unreachable from LAN clients.
+func outboundInterfaces() []net.Interface {
+	conn, err := net.Dial("udp", "1.1.1.1:53")
+	if err != nil {
+		return nil
+	}
+	defer conn.Close()
+	localIP := conn.LocalAddr().(*net.UDPAddr).IP
+
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	for _, iface := range ifaces {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch value := addr.(type) {
+			case *net.IPNet:
+				ip = value.IP
+			case *net.IPAddr:
+				ip = value.IP
+			}
+			if ip != nil && ip.Equal(localIP) {
+				return []net.Interface{iface}
+			}
+		}
+	}
+	return nil
 }
 
 func (a *App) OnShutdown() error {
