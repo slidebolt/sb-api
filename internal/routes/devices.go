@@ -34,9 +34,6 @@ type DeviceInput struct {
 // the device if any are present, or nil if none are set.
 func extractDeviceProfileFields(dev domain.Device) json.RawMessage {
 	profile := make(map[string]any)
-	if dev.SecurityGroup != "" {
-		profile["securityGroup"] = dev.SecurityGroup
-	}
 	if len(dev.Labels) > 0 {
 		profile["labels"] = dev.Labels
 	}
@@ -74,26 +71,38 @@ func storedDevice(key string, data []byte) (json.RawMessage, bool) {
 	return json.RawMessage(data), true
 }
 
-func deviceAllowed(ctx context.Context, store storage.Storage, device domain.Device) bool {
-	if device.SecurityGroup != "" {
-		return auth.AllowsGroup(ctx, device.SecurityGroup)
-	}
+func deviceSecurityGroups(store storage.Storage, device domain.Device) ([]string, error) {
 	entries, err := store.Search(device.Plugin + "." + device.ID + ".*")
 	if err != nil {
-		return false
+		return nil, err
 	}
+	entities := make([]domain.Entity, 0, len(entries))
 	for _, entry := range entries {
 		if data, ok := storedEntity(entry.Key, entry.Data); ok {
-			group, _ := auth.ResourceSecurityGroup(data)
-			if auth.AllowsGroup(ctx, group) {
-				return true
+			var entity domain.Entity
+			if json.Unmarshal(data, &entity) == nil {
+				entities = append(entities, entity)
 			}
 		}
 	}
-	return auth.AllowsGroup(ctx, domain.SecurityGroupSystem)
+	return domain.DeviceSecurityGroups(device, entities...)
 }
 
-func filterDeviceEntities(ctx context.Context, device *domain.Device) {
+func projectDevice(ctx context.Context, store storage.Storage, device *domain.Device) bool {
+	groups, err := deviceSecurityGroups(store, *device)
+	if err != nil {
+		return false
+	}
+	visibleGroups := make([]string, 0, len(groups))
+	for _, group := range groups {
+		if auth.AllowsGroup(ctx, group) {
+			visibleGroups = append(visibleGroups, group)
+		}
+	}
+	if len(visibleGroups) == 0 {
+		return false
+	}
+	device.SecurityGroups = visibleGroups
 	filtered := make([]domain.Entity, 0, len(device.Entities))
 	for _, entity := range device.Entities {
 		if entity.SecurityGroup == "" {
@@ -104,6 +113,7 @@ func filterDeviceEntities(ctx context.Context, device *domain.Device) {
 		}
 	}
 	device.Entities = filtered
+	return true
 }
 
 // rawKeyed wraps a key + raw JSON so it satisfies storage.Keyed.
@@ -132,8 +142,7 @@ func RegisterDevices(api huma.API, store storage.Storage) {
 			if data, ok := storedDevice(e.Key, e.Data); ok {
 				var device domain.Device
 				_ = json.Unmarshal(data, &device)
-				if deviceAllowed(ctx, store, device) {
-					filterDeviceEntities(ctx, &device)
+				if projectDevice(ctx, store, &device) {
 					projected, _ := json.Marshal(device)
 					out = append(out, DeviceEntry{Key: e.Key, Data: projected})
 				}
@@ -157,10 +166,9 @@ func RegisterDevices(api huma.API, store storage.Storage) {
 		device, ok := storedDevice(input.DeviceKey.Key(), data)
 		var decoded domain.Device
 		_ = json.Unmarshal(device, &decoded)
-		if !ok || !deviceAllowed(ctx, store, decoded) {
+		if !ok || !projectDevice(ctx, store, &decoded) {
 			return nil, huma.Error404NotFound("device not found")
 		}
-		filterDeviceEntities(ctx, &decoded)
 		projected, _ := json.Marshal(decoded)
 		return &DeviceOutput{Body: projected}, nil
 	})
@@ -200,6 +208,16 @@ func RegisterDevices(api huma.API, store storage.Storage) {
 		Tags:        []string{"devices"},
 	}, func(ctx context.Context, input *DeviceInput) (*struct{}, error) {
 		key := DeviceKey{Plugin: input.Plugin, ID: input.ID}
+		var patch map[string]json.RawMessage
+		if err := json.Unmarshal(input.Body, &patch); err != nil {
+			return nil, huma.Error400BadRequest("invalid profile patch", err)
+		}
+		if _, exists := patch["securityGroup"]; exists {
+			return nil, huma.Error400BadRequest("device security groups are plugin-owned")
+		}
+		if _, exists := patch["securityGroups"]; exists {
+			return nil, huma.Error400BadRequest("device security groups are plugin-owned")
+		}
 		merged, empty, err := mergeProfilePatch(store, key, input.Body)
 		if err != nil {
 			return nil, huma.Error400BadRequest("invalid profile patch", err)

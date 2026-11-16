@@ -41,6 +41,11 @@ func validateDeviceBody(body json.RawMessage, path DeviceKey) (domain.Device, er
 	if err := validateSegment("id", dev.ID); err != nil {
 		return domain.Device{}, err
 	}
+	groups, err := domain.NormalizeSecurityGroups(dev.SecurityGroups...)
+	if err != nil {
+		return domain.Device{}, err
+	}
+	dev.SecurityGroups = groups
 	return dev, nil
 }
 

@@ -68,7 +68,7 @@ func schemaFor(value any) json.RawMessage {
 func RegisterDefinitions(api huma.API, store storage.Storage, managerURL string) {
 	client := &http.Client{Timeout: 2 * time.Second}
 	huma.Register(api, huma.Operation{Method: "GET", Path: "/definitions", Summary: "List serialized domain and plugin definitions", Description: "Returns code-owned schemas and descriptions plus live coverage. The response contains no plugin-specific presentation logic.", Tags: []string{"definitions"}}, func(ctx context.Context, _ *struct{}) (*DefinitionsOutput, error) {
-		body := DefinitionsBody{SchemaVersion: 1}
+		body := DefinitionsBody{SchemaVersion: 2}
 		body.Coverage.Devices.Unresolved = []string{}
 		body.Coverage.Entities.Unresolved = []string{}
 		body.Coverage.Commands.Unresolved = []string{}
@@ -100,6 +100,8 @@ func RegisterDefinitions(api huma.API, store storage.Storage, managerURL string)
 			catalog := &PluginCatalog{ID: status.ID, State: status.State, Definitions: status.Definitions}
 			if status.Definitions == nil {
 				catalog.DefinitionError = "plugin did not serialize a definition manifest"
+			} else if err := domain.ValidatePluginSecurityGroups(status.Definitions); err != nil {
+				catalog.DefinitionError = err.Error()
 			}
 			plugins[status.ID] = catalog
 			if status.Definitions != nil {

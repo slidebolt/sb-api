@@ -85,7 +85,7 @@ Queries are named, reusable search definitions stored under sb-query.queries.* a
 		visible := make([]storage.Entry, 0, len(entries))
 		for _, entry := range entries {
 			if allowedDevice(ctx, store, entry.Data) {
-				entry.Data = projectDevice(ctx, entry.Data)
+				entry.Data = projectDevice(ctx, store, entry.Data)
 				visible = append(visible, entry)
 			}
 		}
@@ -169,7 +169,7 @@ Queries are named, reusable search definitions stored under sb-query.queries.* a
 		if !allowedDevice(ctx, store, data) {
 			return mcp.NewToolResultError("device not found"), nil
 		}
-		out := map[string]any{"key": key, "data": json.RawMessage(projectDevice(ctx, data))}
+		out := map[string]any{"key": key, "data": json.RawMessage(projectDevice(ctx, store, data))}
 		result, _ := json.Marshal(out)
 		return mcp.NewToolResultText(string(result)), nil
 	})

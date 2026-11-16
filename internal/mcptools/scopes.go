@@ -7,6 +7,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/slidebolt/sb-api/internal/auth"
+	domain "github.com/slidebolt/sb-domain"
 	storage "github.com/slidebolt/sb-storage-sdk"
 )
 
@@ -103,42 +104,66 @@ func filterAllowedEntries(ctx context.Context, entries []storage.Entry) []storag
 	return out
 }
 
-func allowedDevice(ctx context.Context, store storage.Storage, data []byte) bool {
-	var device struct {
-		Plugin        string `json:"plugin"`
-		ID            string `json:"id"`
-		SecurityGroup string `json:"securityGroup"`
-	}
+func deviceGroups(store storage.Storage, data []byte) ([]string, bool) {
+	var device domain.Device
 	if json.Unmarshal(data, &device) != nil || device.Plugin == "" || device.ID == "" {
-		return false
-	}
-	if device.SecurityGroup != "" {
-		return auth.AllowsGroup(ctx, device.SecurityGroup)
+		return nil, false
 	}
 	entries, err := store.Search(device.Plugin + "." + device.ID + ".*")
 	if err != nil {
-		return false
+		return nil, false
 	}
-	return len(filterAllowedEntries(ctx, entries)) > 0 || auth.AllowsGroup(ctx, "system")
+	entities := make([]domain.Entity, 0, len(entries))
+	for _, entry := range entries {
+		var entity domain.Entity
+		if json.Unmarshal(entry.Data, &entity) == nil && entity.Type != "" {
+			entities = append(entities, entity)
+		}
+	}
+	groups, err := domain.DeviceSecurityGroups(device, entities...)
+	return groups, err == nil
 }
 
-func projectDevice(ctx context.Context, data []byte) []byte {
-	var device map[string]any
+func allowedDevice(ctx context.Context, store storage.Storage, data []byte) bool {
+	groups, ok := deviceGroups(store, data)
+	if !ok {
+		return false
+	}
+	for _, group := range groups {
+		if auth.AllowsGroup(ctx, group) {
+			return true
+		}
+	}
+	return false
+}
+
+func projectDevice(ctx context.Context, store storage.Storage, data []byte) []byte {
+	var device domain.Device
 	if json.Unmarshal(data, &device) != nil {
 		return data
 	}
-	values, ok := device["entities"].([]any)
+	groups, ok := deviceGroups(store, data)
 	if !ok {
 		return data
 	}
-	visible := make([]any, 0, len(values))
-	for _, value := range values {
-		encoded, _ := json.Marshal(value)
-		if allowedResource(ctx, encoded) {
-			visible = append(visible, value)
+	device.SecurityGroups = device.SecurityGroups[:0]
+	for _, group := range groups {
+		if auth.AllowsGroup(ctx, group) {
+			device.SecurityGroups = append(device.SecurityGroups, group)
 		}
 	}
-	device["entities"] = visible
+	visible := make([]domain.Entity, 0, len(device.Entities))
+	for _, entity := range device.Entities {
+		group := entity.SecurityGroup
+		if group == "" {
+			group = domain.DefaultSecurityGroup(entity.Type)
+			entity.SecurityGroup = group
+		}
+		if auth.AllowsGroup(ctx, group) {
+			visible = append(visible, entity)
+		}
+	}
+	device.Entities = visible
 	projected, _ := json.Marshal(device)
 	return projected
 }

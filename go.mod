@@ -8,8 +8,8 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/invopop/jsonschema v0.13.0
 	github.com/mark3labs/mcp-go v0.45.0
-	github.com/slidebolt/sb-contract v1.0.14
-	github.com/slidebolt/sb-domain v1.0.26
+	github.com/slidebolt/sb-contract v1.0.15
+	github.com/slidebolt/sb-domain v1.0.27
 	github.com/slidebolt/sb-logging v1.0.7
 	github.com/slidebolt/sb-logging-sdk v1.0.9
 	github.com/slidebolt/sb-media-sdk v1.0.4

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -243,6 +244,50 @@ func TestSecurityGroupsFilterEntitiesAndCommands(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("media command status = %d", resp.StatusCode)
+	}
+}
+
+func TestSecurityGroupsProjectMixedDeviceForCaller(t *testing.T) {
+	msg, err := messenger.Mock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer msg.Close()
+	device := json.RawMessage(`{"plugin":"plugin-test","id":"mixed","name":"Mixed","securityGroups":["system"],"entities":[]}`)
+	home := securityEntity("plugin-test", "mixed", "lamp", "light", "home")
+	media := securityEntity("plugin-test", "mixed", "player", "media_player", "media")
+	store := &fakeStore{searchResultsByPattern: map[string][]storage.Entry{
+		"*.*":                 {{Key: "plugin-test.mixed", Data: device}},
+		"plugin-test.mixed.*": {{Key: "plugin-test.mixed.lamp", Data: home}, {Key: "plugin-test.mixed.player", Data: media}},
+	}}
+	seedAccessToken(store, auth.AccessRead, []string{"home"})
+	srv := httptest.NewServer(New(msg, store))
+	defer srv.Close()
+
+	resp, err := authGet(srv.URL + "/devices")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var devices []struct {
+		Data domain.Device `json:"data"`
+	}
+	decodeBody(t, resp, &devices)
+	if len(devices) != 1 {
+		t.Fatalf("devices = %+v", devices)
+	}
+	want := []string{domain.SecurityGroupHome}
+	if !reflect.DeepEqual(devices[0].Data.SecurityGroups, want) {
+		t.Fatalf("projected securityGroups = %v, want %v", devices[0].Data.SecurityGroups, want)
+	}
+
+	seedAccessToken(store, auth.AccessRead, []string{"security"})
+	resp, err = authGet(srv.URL + "/devices")
+	if err != nil {
+		t.Fatal(err)
+	}
+	decodeBody(t, resp, &devices)
+	if len(devices) != 0 {
+		t.Fatalf("unauthorized devices = %+v", devices)
 	}
 }
 
@@ -1428,6 +1473,31 @@ func TestDevicesRoutes_SetProfile(t *testing.T) {
 	prof, ok := got["profile"].(map[string]any)
 	if !ok || prof["id"] != "basement-device-2" {
 		t.Fatalf("profile body: %+v", got)
+	}
+}
+
+func TestDevicesRoutes_RejectSecurityGroupProfileOverride(t *testing.T) {
+	msg, err := messenger.Mock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer msg.Close()
+	store := &fakeStore{}
+	seedToken(store, []string{"admin"})
+	srv := httptest.NewServer(New(msg, store))
+	defer srv.Close()
+	req, err := http.NewRequest(http.MethodPatch, srv.URL+"/devices/plugin/dev2/profile", bytes.NewReader([]byte(`{"securityGroups":["private"]}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := authDo(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
 	}
 }
 
