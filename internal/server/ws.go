@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -48,8 +49,8 @@ func webSocketEvents(store storage.Storage, msg messenger.Messenger) http.Handle
 		}
 		visible := make([]storage.Entry, 0, len(entries))
 		for _, entry := range entries {
-			group, ok := auth.ResourceSecurityGroup(entry.Data)
-			if ok && auth.AllowsGroup(r.Context(), group) {
+			if data, ok := authorizedWebSocketData(r.Context(), entry.Data); ok {
+				entry.Data = data
 				visible = append(visible, entry)
 			}
 		}
@@ -64,20 +65,17 @@ func webSocketEvents(store storage.Storage, msg messenger.Messenger) http.Handle
 		events := make(chan wsEventsMessage, 32)
 		watcher, err := storage.Watch(msg, storage.Query{Pattern: pattern}, storage.WatchHandlers{
 			OnAdd: func(key string, data json.RawMessage) {
-				group, ok := auth.ResourceSecurityGroup(data)
-				if ok && auth.AllowsGroup(r.Context(), group) {
+				if data, ok := authorizedWebSocketData(r.Context(), data); ok {
 					events <- wsEventsMessage{Type: "upsert", Key: key, Data: data}
 				}
 			},
 			OnUpdate: func(key string, data json.RawMessage) {
-				group, ok := auth.ResourceSecurityGroup(data)
-				if ok && auth.AllowsGroup(r.Context(), group) {
+				if data, ok := authorizedWebSocketData(r.Context(), data); ok {
 					events <- wsEventsMessage{Type: "upsert", Key: key, Data: data}
 				}
 			},
 			OnRemove: func(key string, data json.RawMessage) {
-				group, ok := auth.ResourceSecurityGroup(data)
-				if ok && auth.AllowsGroup(r.Context(), group) {
+				if data, ok := authorizedWebSocketData(r.Context(), data); ok {
 					events <- wsEventsMessage{Type: "remove", Key: key, Data: data}
 				}
 			},
@@ -116,6 +114,22 @@ func webSocketEvents(store storage.Storage, msg messenger.Messenger) http.Handle
 			}
 		}
 	}
+}
+
+func authorizedWebSocketData(ctx context.Context, data json.RawMessage) (json.RawMessage, bool) {
+	group, ok := auth.ResourceSecurityGroup(data)
+	if !ok || !auth.AllowsGroup(ctx, group) {
+		return nil, false
+	}
+	var envelope map[string]any
+	if json.Unmarshal(data, &envelope) != nil {
+		return nil, false
+	}
+	if current, _ := envelope["securityGroup"].(string); current == "" {
+		envelope["securityGroup"] = group
+		data, _ = json.Marshal(envelope)
+	}
+	return data, true
 }
 
 func writeWebSocketMessage(conn *websocket.Conn, msg wsEventsMessage) error {

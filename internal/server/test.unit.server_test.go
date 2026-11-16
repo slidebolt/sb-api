@@ -974,6 +974,10 @@ func TestWebSocketEvents_StreamSnapshotAndUpdates(t *testing.T) {
 	if len(snapshot.Items) != 1 || snapshot.Items[0].Key != "plugin.dev1.ent1" {
 		t.Fatalf("snapshot items: got %+v", snapshot.Items)
 	}
+	var snapshotEntity map[string]any
+	if err := json.Unmarshal(snapshot.Items[0].Data, &snapshotEntity); err != nil || snapshotEntity["securityGroup"] != "home" {
+		t.Fatalf("snapshot entity security group: data=%s err=%v", snapshot.Items[0].Data, err)
+	}
 	if got := store.searchPattern; got != "plugin.dev1.>" {
 		t.Fatalf("search pattern: got %q want %q", got, "plugin.dev1.>")
 	}
@@ -995,8 +999,13 @@ func TestWebSocketEvents_StreamSnapshotAndUpdates(t *testing.T) {
 	if event.Key != "plugin.dev1.ent1" {
 		t.Fatalf("event key: got %q want %q", event.Key, "plugin.dev1.ent1")
 	}
-	if string(event.Data) != string(updated) {
-		t.Fatalf("event data: got %s want %s", string(event.Data), string(updated))
+	var eventEntity map[string]any
+	if err := json.Unmarshal(event.Data, &eventEntity); err != nil || eventEntity["securityGroup"] != "home" {
+		t.Fatalf("event entity security group: data=%s err=%v", event.Data, err)
+	}
+	state, _ := eventEntity["state"].(map[string]any)
+	if state["power"] != true {
+		t.Fatalf("event data: got %s", event.Data)
 	}
 }
 
