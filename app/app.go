@@ -26,6 +26,8 @@ type App struct {
 	discovery *zeroconf.Server
 }
 
+const discoveryService = "_slidebolt-api._tcp"
+
 func New(cfg Config) *App {
 	return &App{cfg: cfg}
 }
@@ -108,7 +110,7 @@ func (a *App) startDiscovery() {
 		name = "SlideBolt"
 	}
 	txt := []string{"id=" + a.cfg.SystemID, "api=" + a.cfg.PublicURL, "version=1.0.33", "path=" + u.Path}
-	server, err := zeroconf.Register(name, "_slidebolt._tcp", "local.", port, txt, nil)
+	server, err := zeroconf.Register(name, discoveryService, "local.", port, txt, nil)
 	if err == nil {
 		a.discovery = server
 	}
