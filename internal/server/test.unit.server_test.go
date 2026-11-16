@@ -349,6 +349,10 @@ func TestOpenAPIDocumentsBearerAuthAndSecurityGroups(t *testing.T) {
 			t.Fatalf("pairing path missing: %s", path)
 		}
 	}
+	createPairing := paths["/pairing/requests"].(map[string]any)["post"].(map[string]any)
+	if security, ok := createPairing["security"].([]any); !ok || len(security) != 0 {
+		t.Fatalf("public pairing operation security = %#v", createPairing["security"])
+	}
 	servers := document["servers"].([]any)
 	if len(servers) != 1 || servers[0].(map[string]any)["url"] != "https://slidebolt.example/core" {
 		t.Fatalf("servers = %+v", servers)

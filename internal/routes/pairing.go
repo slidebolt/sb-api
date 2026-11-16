@@ -168,7 +168,7 @@ func RegisterPairing(api huma.API, store storage.Storage, cfg PairingConfig) {
 	if name == "" {
 		name = "SlideBolt"
 	}
-	huma.Register(api, huma.Operation{Method: http.MethodGet, Path: "/.well-known/slidebolt", Summary: "Describe this SlideBolt installation", Tags: []string{"pairing"}}, func(context.Context, *struct{}) (*WellKnownOutput, error) {
+	huma.Register(api, huma.Operation{Method: http.MethodGet, Path: "/.well-known/slidebolt", Summary: "Describe this SlideBolt installation", Tags: []string{"pairing"}, Security: []map[string][]string{}}, func(context.Context, *struct{}) (*WellKnownOutput, error) {
 		out := &WellKnownOutput{}
 		out.Body.ID = cfg.SystemID
 		out.Body.Name = name
@@ -179,7 +179,7 @@ func RegisterPairing(api huma.API, store storage.Storage, cfg PairingConfig) {
 		return out, nil
 	})
 
-	huma.Register(api, huma.Operation{Method: http.MethodPost, Path: "/pairing/requests", Summary: "Request client pairing", Tags: []string{"pairing"}}, func(ctx context.Context, in *PairingCreateInput) (*PairingCreateOutput, error) {
+	huma.Register(api, huma.Operation{Method: http.MethodPost, Path: "/pairing/requests", Summary: "Request client pairing", Tags: []string{"pairing"}, Security: []map[string][]string{}}, func(ctx context.Context, in *PairingCreateInput) (*PairingCreateOutput, error) {
 		if strings.TrimSpace(in.Body.ClientName) == "" {
 			return nil, huma.Error422UnprocessableEntity("clientName is required")
 		}
@@ -265,7 +265,7 @@ func RegisterPairing(api huma.API, store storage.Storage, cfg PairingConfig) {
 		return pairingAdmin(p), nil
 	})
 
-	huma.Register(api, huma.Operation{Method: http.MethodPost, Path: "/pairing/requests/{id}/exchange", Summary: "Exchange an approved pairing request", Tags: []string{"pairing"}}, func(ctx context.Context, in *PairingExchangeInput) (*PairingExchangeOutput, error) {
+	huma.Register(api, huma.Operation{Method: http.MethodPost, Path: "/pairing/requests/{id}/exchange", Summary: "Exchange an approved pairing request", Tags: []string{"pairing"}, Security: []map[string][]string{}}, func(ctx context.Context, in *PairingExchangeInput) (*PairingExchangeOutput, error) {
 		pairingMu.Lock()
 		defer pairingMu.Unlock()
 		p, err := findPairing(store, func(p pairingRequest) bool { return p.ID == in.ID })
